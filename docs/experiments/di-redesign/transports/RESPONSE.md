@@ -1749,3 +1749,50 @@ The user signed it off the same day; it builds in test batch 23 with the forty-s
 - **S12. Accepted.** The race resolves to the correct `unavailable` either way.
 - **S13. Use the same phrase anyway,** "the server is shutting down". A close frame isn't a refusal, but one wording for one condition helps log searches and clients, and it fits within the 123-byte reason limit.
 - **S14. Accepted,** since the link is RabbitMQ-specific and documented as such.
+
+## Forty-fourth response: the panic message, the composed clock and the generated certificates
+
+Received 2026-10-10, answering `divergences/race2b-tests21.md` (S1–S10, F374, F375). The user signed it off the same day; it builds in test batch 24, after batch 23.
+
+F374 is a significant find: a panic in a drop could take down the whole process on smol, and tokio had been hiding it. That is exactly what a second runtime was for. Most items are accepted. S1 and S2 have better answers, and S8 should get its embed hosts.
+
+**S5. Accepted.** One clock, whichever way it is read, is the invariant that matters, and two objects that always agree are a fair price for it. This composite wrapper is also the natural place to fix S2.
+
+**S7. Accepted, and thanks for the correction.** My wording was wrong for three hosts. The qualified sentence states the real rule.
+
+**S8 and F375. Yes, the WebSocket suite gains embed hosts.** The hand-off inside salvo, poem and rocket is a real path users will run, and today only two adapter tests touch it. Give the suite's `Host` a declaration of whether it upgrades, as the HTTP suite has, asserted in both directions, and add the embed hosts. Then a host that declares upgrades but never delivers fails a test instead of shipping.
+
+**S2. Route app-spawned tasks through the app's redaction.** Most tasks aren't spawned "outside any graph": they are spawned through the app's own runtime, `Dep<dyn Runtime>` or `AppHandle::runtime()`, which S5 already wraps. Let that wrapper carry the graph's redactor, so a task spawned through the app gets the full redaction, registered secrets included. Only a task spawned on a bare runtime, outside any app, falls back to the userinfo strip, and that is the honest limit. A panic message is exactly where a connection string ends up, so this matters.
+
+**S1. Keep `Clone` with `Arc<Redacted>`, drop the comparison traits.** Losing `Clone` makes `TaskEnd` awkward to pass around: storing it, sending it, reporting it twice. `Arc<Redacted>` keeps `Clone` cheaply. `Copy`, `PartialEq`, `Eq` and `Hash` can go, since comparing panic messages for equality means nothing. Tests that want to check the variant are better served by `is_finished()`, `is_aborted()` and `is_panicked()` helpers.
+
+**S3. Accepted.** `tracing` is the ecosystem's logging facade, not a runtime, so the rule holds.
+
+**S4. Accepted, but make "already installed" fail clearly.** A global subscriber can only be installed once per process. If a user's test binary has already installed one, the suite's installation fails, and the `warn` scenario must say exactly that ("the test binary installed its own subscriber, so this scenario can't capture the warning"), never pass without having looked.
+
+**S6. Accepted.** A task that already finished has its end recorded, and a later drop-time panic doesn't change what happened.
+
+**S9. Accepted.** A test-support crate keeps `rcgen` out of `ulo-net`'s published manifest, which a feature couldn't do.
+
+**S10. Accepted.**
+
+## Forty-fifth response: ordered writers, early checks and F376
+
+Received 2026-10-10, answering `divergences/race2b-tests22.md` (S1–S7, F376). The user signed it off the same day; F376, the `ordered_control` capability and the `WsModule` init hook join test batch 23, which was building.
+
+Thanks for checking S4 against the code rather than taking my premise. Data frames couldn't reorder, cancels could, and the fix was needed anyway, for the right reason now.
+
+**S4. Keep both tests, but gate the cancel test on a capability.**
+
+- **`client_stream_in_order`: keep it.** A regression test is allowed to pass against the current code. Its job is to fail against a future change that breaks the invariant, and per-frame tasks are an easy shape for someone to reintroduce while "optimising". It guards a property the design promises, so it earns its place.
+- **`cancel_follows_its_request`: run it based on what the link declares, not on a list of crates.** Hardcoding "TCP and Redis" means a future link that does share one lane end to end silently skips the test, which is the not-testing-what-could-fail problem in another form. Add a capability (say, `ordered_control: bool`) meaning "a request and its control frames travel one ordered lane end to end". TCP and Redis declare it, so the scenario runs there and is not applicable elsewhere, with U17 as the reason. A new link then gets the test by declaring what is true of it.
+
+**S5. Accepted.** With ordering guaranteed, the `cancel` always arrives after its request, so the server starts the call and cancels it at once. That is a little wasted work in exchange for never interleaving a half-written frame, and it is what TCP already did. Taking an unsent frame back out of the queue would save that work, but at real complexity for a rare case.
+
+**S3. Accepted.** `usable()` checks the one thing a client path can actually get wrong. The rest of `prepare` belongs to servers.
+
+**S4b. Add the `WsModule` init hook, and keep `publish`'s refusal as the last resort.** A process that broadcasts but serves no gateway then fails at `connect`, which is still startup. That is far better than failing on its first publish in production. Calling the adapter's `prepare` from both places is fine: it is a check, so running it twice costs nothing. `publish` keeping a non-panicking refusal covers anything that slips past both.
+
+**S6 and S7. Accepted.**
+
+**F376. Fix it in batch 23.** A held call the server keeps forever is a resource leak until the drain. The client already holds a streamed request's control frames in the call's entry until `opened` arrives, so the fix is to hold the `cancel` there too, instead of discarding it. When `opened` arrives, the held `cancel` goes out first, in order. The server sees a call open and cancel immediately, and nothing is leaked.
