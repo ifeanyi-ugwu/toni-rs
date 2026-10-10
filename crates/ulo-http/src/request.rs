@@ -136,10 +136,11 @@ impl fmt::Debug for OnUpgrade {
 /// An upgraded connection's I/O, whatever the backend's type, as `futures-io`'s `AsyncRead` and
 /// `AsyncWrite`.
 ///
-/// With the `tokio-io` feature it is also built from and implements tokio's traits, both through
-/// `tokio-util`'s `compat` layer: a backend whose upgraded I/O is tokio's hands it to
-/// `Upgraded::from_tokio`, and an upgrade handler written against tokio reads and writes it
-/// through tokio's traits, whichever of the two built it.
+/// Built by [`from_futures`](Self::from_futures) from I/O implementing `futures-io`'s traits, or,
+/// with the `tokio-io` feature, by `Upgraded::from_tokio` from I/O implementing tokio's. The
+/// feature also implements tokio's traits on it, both directions through `tokio-util`'s `compat`
+/// layer, so an upgrade handler written against tokio reads and writes it through tokio's traits,
+/// whichever constructor built it.
 pub struct Upgraded {
     io: Pin<Box<dyn Io>>,
 }
@@ -149,15 +150,17 @@ trait Io: AsyncRead + AsyncWrite + Send + 'static {}
 impl<T: AsyncRead + AsyncWrite + Send + 'static> Io for T {}
 
 impl Upgraded {
-    pub fn new(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) -> Self {
+    /// An upgraded connection whose I/O implements `futures-io`'s traits, as smol's does.
+    pub fn from_futures(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) -> Self {
         Upgraded { io: Box::pin(io) }
     }
 
-    /// An upgraded connection whose I/O implements tokio's traits.
+    /// An upgraded connection whose I/O implements tokio's traits, as hyper's does through
+    /// `TokioIo`.
     #[cfg(feature = "tokio-io")]
     pub fn from_tokio(io: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static) -> Self {
         use tokio_util::compat::TokioAsyncReadCompatExt;
-        Upgraded::new(io.compat())
+        Upgraded::from_futures(io.compat())
     }
 }
 

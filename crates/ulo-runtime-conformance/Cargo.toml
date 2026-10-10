@@ -17,3 +17,5 @@ ulo-transport = { path = "../ulo-transport" }
 # The runtime-free oneshot and unbounded channels the scenarios signal through. The suite names no
 # runtime: each runtime crate's `Harness` brings its own executor.
 futures.workspace = true
+# The recording subscriber the scenario reading the core's `warn` installs.
+tracing.workspace = true

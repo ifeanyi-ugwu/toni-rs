@@ -39,6 +39,16 @@ impl Redacted {
     pub(crate) fn from_parts(inner: BoxError, text: String) -> Self {
         Redacted { inner, text }
     }
+
+    /// A second `Redacted` over the same panic message, for an answer given more than once. Only
+    /// a panic's message can be copied; anything else is copied as its redacted text.
+    pub(crate) fn copy_panic(&self) -> Redacted {
+        let message = match self.inner.downcast_ref::<PanicMessage>() {
+            Some(PanicMessage(message)) => message.clone(),
+            None => self.text.clone(),
+        };
+        Redacted::from_parts(Box::new(PanicMessage(message)), self.text.clone())
+    }
 }
 
 impl fmt::Display for Redacted {

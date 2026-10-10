@@ -35,7 +35,8 @@ fn spawns_from_a_thread_outside_any_runtime() {
     .join()
     .expect("spawning from a plain thread panicked");
     finished.recv_timeout(PATIENCE).expect("the task spawned from a plain thread did not run");
-    assert_eq!(runtime.block_on(task), TaskEnd::Finished, "the task spawned from a plain thread");
+    let end = runtime.block_on(task);
+    assert!(matches!(end, TaskEnd::Finished), "the task spawned from a plain thread ended {end:?}");
 }
 
 #[test]

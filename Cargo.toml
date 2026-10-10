@@ -10,6 +10,7 @@ members = [
     "crates/ulo-tokio",
     "crates/ulo-smol",
     "crates/ulo-runtime-conformance",
+    "crates/ulo-test-certs",
     "crates/ulo-hyper-serve",
     "crates/ulo-http",
     "crates/ulo-http-macros",
@@ -114,6 +115,9 @@ prost-build = "0.14"
 prost-types = "0.14"
 protoc-bin-vendored = "3.2"
 quote = "1.0.38"
+# Test certificates, made per run by `ulo-test-certs`, a dev-dependency only; `ring`, the provider
+# `rustls` is built with here.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 rdkafka = "0.39"
 redis = { version = "1", features = ["aio", "tokio-comp"] }
 reqwest = { version = "0.13", default-features = false }

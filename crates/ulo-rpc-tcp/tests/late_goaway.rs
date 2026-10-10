@@ -19,16 +19,12 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use ulo::{App, Module, ModuleDef, ModuleIdentity, Signal, injectable, routes};
 use ulo_net::Tls;
-use ulo_net::rustls::pki_types::pem::PemObject;
-use ulo_net::rustls::pki_types::{CertificateDer, ServerName};
-use ulo_net::rustls::{self, ClientConfig, RootCertStore};
+use ulo_net::rustls::pki_types::ServerName;
+use ulo_net::rustls::{self, ClientConfig};
 use ulo_rpc::{CallHeaders, Codec, Data, Frame};
 use ulo_rpc_tcp::Tcp;
+use ulo_test_certs::localhost;
 use ulo_transport::{Classify, ErrorKind};
-
-const CA: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/ca.pem");
-const CERT: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/localhost.pem");
-const KEY: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/localhost-key.pem");
 
 const HOLD: &str = "late_goaway.hold";
 
@@ -89,8 +85,7 @@ impl Module for Root {
 }
 
 fn connector() -> TlsConnector {
-    let mut roots = RootCertStore::empty();
-    roots.add(CertificateDer::from_pem_slice(CA).expect("the CA parses")).expect("the CA is a trust anchor");
+    let roots = localhost().roots();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
@@ -133,7 +128,7 @@ async fn a_connection_registered_after_the_drain_began_receives_goaway() {
         .connect()
         .await
         .expect("the server connects")
-        .bind(ulo_rpc::Server::new(Tcp::new("127.0.0.1:0").tls(Tls::from_pem(CERT, KEY))))
+        .bind(ulo_rpc::Server::new(Tcp::new("127.0.0.1:0").tls(Tls::from_pem(localhost().cert_pem(), localhost().key_pem()))))
         .listen()
         .await
         .expect("the server binds");

@@ -1,8 +1,8 @@
 //! The hyper backend serving TLS: the configuration `Tls::load` builds reaches the shared accept
 //! loop, which wraps each connection with `tokio-rustls`; ALPN settles HTTP/2 or HTTP/1.1 as the
 //! client offers; and an upgrade on a TLS connection reaches the app's handler as an `Upgraded`
-//! that carries bytes both ways. The certificate is `ulo-net`'s test fixture, issued for
-//! `localhost` by a test CA.
+//! that carries bytes both ways. The certificate is `ulo-test-certs`' self-signed one for
+//! `localhost`, made when the tests run.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,13 +16,9 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use ulo::Signal;
 use ulo_net::Tls;
-use ulo_net::rustls::pki_types::pem::PemObject;
-use ulo_net::rustls::pki_types::{CertificateDer, ServerName};
-use ulo_net::rustls::{self, ClientConfig, RootCertStore};
-
-const CA: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/ca.pem");
-const CERT: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/localhost.pem");
-const KEY: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/localhost-key.pem");
+use ulo_net::rustls::pki_types::ServerName;
+use ulo_net::rustls::{self, ClientConfig};
+use ulo_test_certs::localhost;
 
 /// How long any one step may take.
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -37,7 +33,8 @@ struct Served {
 
 impl Served {
     async fn start() -> Served {
-        let server = ulo_http_hyper::Server::new("127.0.0.1:0").tls(Tls::from_pem(CERT, KEY));
+        let cert = localhost();
+        let server = ulo_http_hyper::Server::new("127.0.0.1:0").tls(Tls::from_pem(cert.cert_pem(), cert.key_pem()));
         let app = ulo_http_conformance::app().await.bind(server).listen().await.expect("the app listens with TLS");
         let [bound] = app.addresses().try_into().expect("one bound address");
         assert!(bound.tls, "the bound address reports TLS");
@@ -53,10 +50,9 @@ impl Served {
         Served { addr: bound.addr, stop, serving }
     }
 
-    /// A TLS connection offering `alpn`, the server's certificate checked against the test CA.
+    /// A TLS connection offering `alpn`, the server's certificate trusted directly.
     async fn connect(&self, alpn: &[&[u8]]) -> TlsStream<TcpStream> {
-        let mut roots = RootCertStore::empty();
-        roots.add(CertificateDer::from_pem_slice(CA).expect("the CA parses")).expect("the CA is a trust anchor");
+        let roots = localhost().roots();
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let mut config = ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()

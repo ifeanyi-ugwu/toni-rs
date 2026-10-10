@@ -31,6 +31,9 @@ tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 ulo-http-conformance = { path = "../ulo-http-conformance" }
+# `tests/websocket.rs`: a gateway on the HTTP transport, which a host without upgrades refuses.
+ulo-tokio = { path = "../ulo-tokio" }
+ulo-ws = { path = "../ulo-ws" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }
 
 [[test]]

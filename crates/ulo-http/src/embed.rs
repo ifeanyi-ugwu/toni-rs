@@ -98,8 +98,9 @@ pub trait Embed: Send + Sync + 'static {
     /// Takes the host's upgrade future out of a request's extensions, for [`Service`]'s
     /// `tower::Service` impl, which hands it to the app as [`Request::upgrade`] when the host
     /// declares `upgrades`. A hyper-based host stores hyper's `OnUpgrade` there, and its adapter
-    /// converts it, as axum's does. `None`, the default, takes nothing; an adapter that builds the
-    /// app's request itself for [`Service::respond`] sets `upgrade` there instead.
+    /// converts it, as axum's does. `None`, the default, takes nothing. A host declaring
+    /// `upgrades: true` must implement this, unless it builds the app's request itself for
+    /// [`Service::respond`] and sets `upgrade` there.
     fn take_upgrade(extensions: &mut http::Extensions) -> Option<OnUpgrade> {
         let _ = extensions;
         None

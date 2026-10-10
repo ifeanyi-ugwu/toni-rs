@@ -28,7 +28,7 @@ use crate::lifecycle::{connect, shutdown};
 use crate::module::Module;
 use crate::module::handle::ModuleRef;
 use crate::redact::{Redacted, redact};
-use crate::runtime::Runtime;
+use crate::runtime::{Clocked, Runtime};
 use crate::signal::Signal;
 use crate::testing::TestPlan;
 use crate::timer::{BoxError, BoxFuture, Defaults, Timer};
@@ -64,9 +64,13 @@ pub struct AppBuilder {
 /// The app's timing configuration. `None` is unset.
 #[derive(Clone, Default)]
 pub(crate) struct AppConfig {
-    /// The clock: the `Runtime`'s own object when one is set.
+    /// The clock: the `Runtime`'s own object, unless `.timer(..)` came after `.runtime(..)`.
     pub(crate) timer: Option<Arc<dyn Timer>>,
+    /// What `Dep<dyn Runtime>` resolves to: the runtime as given, or, once a later `.timer(..)`
+    /// replaced its clock, its spawning with that clock.
     pub(crate) runtime: Option<Arc<dyn Runtime>>,
+    /// The runtime as given to `.runtime(..)`, which a later `.timer(..)` takes the spawning of.
+    spawner: Option<Arc<dyn Runtime>>,
     pub(crate) drain_timeout: Option<Duration>,
     pub(crate) shutdown_timeout: Option<Duration>,
     pub(crate) hook_timeout: Option<Duration>,
@@ -120,20 +124,32 @@ impl App {
 
 impl AppBuilder {
     /// The app's one clock; bound for services as `Dep<dyn Timer>` in the core's global module.
-    /// It replaces a `Runtime` set before it, which leaves the app with no `Dep<dyn Runtime>`:
-    /// the clock services read and the one the runtime carries are never two.
+    ///
+    /// It sets the clock and nothing else, so after [`runtime`](Self::runtime) it replaces only
+    /// the runtime's clock: `.runtime(r).timer(t)` spawns on `r` and times with `t`, and
+    /// `Dep<dyn Runtime>` then sleeps and reads the time on `t`, so the app has one clock whatever
+    /// reads it.
     pub fn timer(mut self, timer: impl Timer) -> Self {
-        self.config.timer = Some(Arc::new(timer));
-        self.config.runtime = None;
+        let timer: Arc<dyn Timer> = Arc::new(timer);
+        self.config.runtime = self
+            .config
+            .spawner
+            .as_ref()
+            .map(|spawner| Arc::new(Clocked::new(Arc::clone(spawner), Arc::clone(&timer))) as Arc<dyn Runtime>);
+        self.config.timer = Some(timer);
         self
     }
 
     /// The app's clock and executor; bound for services as `Dep<dyn Runtime>` in the core's global
     /// module, and as `Dep<dyn Timer>`, which resolves to the same object. Everything a `Timer`
-    /// alone enables it enables as the clock; it replaces a `Timer` set before it.
+    /// alone enables it enables as the clock.
+    ///
+    /// It sets both the spawning and the clock, so it replaces a [`timer`](Self::timer) set
+    /// before it: `.timer(t).runtime(r)` is `r` for both.
     pub fn runtime(mut self, runtime: impl Runtime) -> Self {
         let runtime: Arc<dyn Runtime> = Arc::new(runtime);
         self.config.timer = Some(Arc::clone(&runtime) as Arc<dyn Timer>);
+        self.config.spawner = Some(Arc::clone(&runtime));
         self.config.runtime = Some(runtime);
         self
     }

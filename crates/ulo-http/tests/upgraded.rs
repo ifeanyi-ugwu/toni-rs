@@ -53,7 +53,7 @@ impl futures::io::AsyncWrite for Loopback {
 #[tokio::test]
 async fn a_futures_io_connection_reads_back_what_was_written() {
     within(async {
-        let mut upgraded = Upgraded::new(Loopback::default());
+        let mut upgraded = Upgraded::from_futures(Loopback::default());
         upgraded.write_all(b"ping").await.expect("the write goes through");
         upgraded.flush().await.expect("the flush goes through");
         let mut read = [0u8; 4];
@@ -74,7 +74,7 @@ mod tokio_io {
     #[tokio::test]
     async fn tokio_traits_reach_a_futures_io_connection() {
         within(async {
-            let mut upgraded = Upgraded::new(Loopback::default());
+            let mut upgraded = Upgraded::from_futures(Loopback::default());
             upgraded.write_all(b"ping").await.expect("the write goes through");
             upgraded.flush().await.expect("the flush goes through");
             let mut read = [0u8; 4];

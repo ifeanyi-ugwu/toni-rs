@@ -2,24 +2,23 @@
 //! the two rustls connections below exchange their records through plain buffers, so a backend on
 //! any runtime gets TLS by wrapping the same configuration in its own TLS crate.
 //!
-//! `tests/fixtures` holds a test CA (`ca.pem`) and a certificate it signed for `localhost` and
-//! `127.0.0.1` (`localhost.pem`, key `localhost-key.pem`), both valid until 2126.
+//! The certificate is `ulo-test-certs`' self-signed one for `localhost`, made when the tests run.
 
 use std::io::{Read, Write};
 use std::sync::Arc;
 
-use ulo_net::rustls::pki_types::pem::PemObject;
-use ulo_net::rustls::pki_types::{CertificateDer, ServerName};
-use ulo_net::rustls::{self, ClientConfig, ClientConnection, RootCertStore, ServerConnection};
+use ulo_net::rustls::pki_types::ServerName;
+use ulo_net::rustls::{self, ClientConfig, ClientConnection, ServerConnection};
 use ulo_net::{Tls, TlsError};
+use ulo_test_certs::{Certified, localhost};
 
-const CA: &[u8] = include_bytes!("fixtures/ca.pem");
-const CERT: &[u8] = include_bytes!("fixtures/localhost.pem");
-const KEY: &[u8] = include_bytes!("fixtures/localhost-key.pem");
+fn served() -> Tls {
+    let cert = localhost();
+    Tls::from_pem(cert.cert_pem(), cert.key_pem())
+}
 
 fn client(alpn: &[&[u8]]) -> ClientConnection {
-    let mut roots = RootCertStore::empty();
-    roots.add(CertificateDer::from_pem_slice(CA).expect("the CA parses")).expect("the CA is a trust anchor");
+    let roots = localhost().roots();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
@@ -32,7 +31,7 @@ fn client(alpn: &[&[u8]]) -> ClientConnection {
 
 #[test]
 fn a_loaded_configuration_completes_a_handshake_without_a_runtime() {
-    let config = Tls::from_pem(CERT, KEY).load(&[b"h2", b"http/1.1"]).expect("the pair loads");
+    let config = served().load(&[b"h2", b"http/1.1"]).expect("the pair loads");
     let mut server = ServerConnection::new(config).expect("the server starts");
     let mut client = client(&[b"h2"]);
 
@@ -61,12 +60,13 @@ fn a_loaded_configuration_completes_a_handshake_without_a_runtime() {
 
 #[test]
 fn load_offers_the_protocols_it_is_given_in_order() {
-    let config = Tls::from_pem(CERT, KEY).load(&[b"h2", b"http/1.1"]).expect("the pair loads");
+    let config = served().load(&[b"h2", b"http/1.1"]).expect("the pair loads");
     assert_eq!(config.alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
 }
 
 #[test]
 fn a_key_that_is_not_the_certificates_is_refused() {
-    let refused = Tls::from_pem(CA, KEY).load(&[]).expect_err("a key not matching the certificate is refused");
+    let other = Certified::self_signed(&["localhost"]);
+    let refused = Tls::from_pem(other.cert_pem(), localhost().key_pem()).load(&[]).expect_err("a key not matching the certificate is refused");
     assert!(matches!(refused, TlsError::Rustls(_)), "refused by rustls, got {refused:?}");
 }

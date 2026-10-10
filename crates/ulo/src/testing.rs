@@ -194,13 +194,16 @@ impl<S> TestApp<S> {
     }
 
     /// The one clock that times the drain, the hooks, the constructions and the readiness
-    /// checks, and that services read as `Dep<dyn Timer>`.
+    /// checks, and that services read as `Dep<dyn Timer>`. It sets only the clock, as
+    /// [`AppBuilder::timer`](crate::AppBuilder::timer) does: `.runtime(r).timer(t)` spawns on `r`
+    /// and times with `t`, a real executor under a test's clock.
     pub fn timer(self, timer: impl Timer) -> TestApp<Settled> {
         TestApp { builder: self.builder.timer(timer), _s: PhantomData }
     }
 
     /// The clock and executor, as [`AppBuilder::runtime`](crate::AppBuilder::runtime) sets them:
-    /// services read it as `Dep<dyn Runtime>`, and as `Dep<dyn Timer>`.
+    /// services read it as `Dep<dyn Runtime>`, and as `Dep<dyn Timer>`. It sets both, so
+    /// `.timer(t).runtime(r)` is `r` for both.
     pub fn runtime(self, runtime: impl Runtime) -> TestApp<Settled> {
         TestApp { builder: self.builder.runtime(runtime), _s: PhantomData }
     }

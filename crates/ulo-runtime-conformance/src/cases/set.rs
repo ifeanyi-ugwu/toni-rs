@@ -43,7 +43,10 @@ pub async fn abort_all<R: Runtime>(rt: R) {
     while let Some(end) = within(&*rt, set.join_next()).await.expect("an aborted task in the set did not end") {
         ends.push(end);
     }
-    assert_eq!(ends, vec![TaskEnd::Aborted; TASKS], "every task after `abort_all`");
+    assert!(
+        ends.len() == TASKS && ends.iter().all(|end| matches!(end, TaskEnd::Aborted)),
+        "every task after `abort_all`: {ends:?}"
+    );
     assert_eq!(drops.load(Ordering::SeqCst), TASKS, "futures dropped once every end was taken");
     assert!(set.is_empty(), "the set after every end was taken");
 }

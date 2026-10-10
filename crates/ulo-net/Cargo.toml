@@ -20,3 +20,7 @@ tracing = { workspace = true }
 # The listen-state read on the Unix targets where socket2 has no `is_listener`.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+# The certificate `tests/tls.rs` serves, made when the tests run.
+ulo-test-certs = { path = "../ulo-test-certs" }

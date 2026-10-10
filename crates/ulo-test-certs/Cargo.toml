@@ -1,0 +1,19 @@
+[package]
+name = "ulo-test-certs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Test certificates generated at run time for the Ulo crates' TLS tests"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# A dev-dependency of the crates whose tests serve TLS, and of nothing else. Cargo strips
+# dev-dependencies when publishing them, so this never needs a crates.io release.
+publish = false
+
+[dependencies]
+# Generates each certificate and key when a test asks for one, so no certificate is committed to
+# expire.
+rcgen.workspace = true
+# The root store a client trusts the certificates through, from the same rustls as `ulo-net`'s.
+rustls.workspace = true

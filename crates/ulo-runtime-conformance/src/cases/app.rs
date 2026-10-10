@@ -36,6 +36,7 @@ pub async fn one_object<R: Runtime>(rt: R) {
     assert_eq!(handle.runtime().map(|runtime| address(&**runtime)), Some(at), "`AppHandle::runtime`");
     assert_eq!(handle.timer().map(|timer| address(&**timer)), Some(at), "`AppHandle::timer`");
     let task = runtime.spawn(Box::pin(async {}));
-    assert_eq!(within(&*timer, task).await, Some(TaskEnd::Finished), "a task spawned through `Dep<dyn Runtime>`");
+    let end = within(&*timer, task).await;
+    assert!(matches!(end, Some(TaskEnd::Finished)), "a task spawned through `Dep<dyn Runtime>` ended {end:?}");
     app.close(Signal::new("conformance")).await.expect("the app did not close");
 }

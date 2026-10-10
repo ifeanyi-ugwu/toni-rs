@@ -26,4 +26,6 @@ tracing.workspace = true
 [dev-dependencies]
 futures-executor.workspace = true
 ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }
+# The certificate the TLS suites serve, made when they run.
+ulo-test-certs = { path = "../ulo-test-certs" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

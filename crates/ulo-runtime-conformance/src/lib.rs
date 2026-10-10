@@ -20,7 +20,10 @@
 //! The suite names no runtime and depends on none. Every wait a scenario makes is bounded through
 //! the runtime's own `Timer`, so a runtime that loses a task fails the scenario after
 //! [`cases::PATIENCE`] instead of hanging it. A scenario that observes a panic causes one inside a
-//! task, and the runtime's panic hook prints it to stderr while the scenario passes.
+//! task, and the panic hook prints it to stderr while the scenario passes.
+//!
+//! The scenario reading the core's `warn` installs a recording `tracing` subscriber as the global
+//! default, once per test binary, so a runtime crate's harness installs none of its own.
 
 use std::future::Future;
 
@@ -51,7 +54,9 @@ macro_rules! runtime_suite {
             abort_is_aborted_once_the_future_is_dropped => task::aborted,
             a_panic_is_panicked_and_goes_no_further => task::panicked,
             an_end_is_kept_and_abort_after_it_changes_nothing => task::end_kept,
+            a_panic_while_an_aborted_future_drops_is_aborted_and_logged => task::panic_while_aborted,
             spawn_with_answers_the_value => value::answered,
+            spawn_with_answers_finished_once_the_value_is_taken => value::taken,
             spawn_with_answers_an_abort => value::aborted,
             spawn_with_answers_a_panic => value::panicked,
             abort_all_aborts_every_task => set::abort_all,

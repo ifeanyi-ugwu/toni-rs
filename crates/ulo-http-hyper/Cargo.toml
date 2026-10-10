@@ -32,5 +32,6 @@ ulo-tokio = { path = "../ulo-tokio" }
 futures-util.workspace = true
 # `net` and `io-util`: the raw HTTP/1.1 client the route-timeout tests read a response with.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
-# The TLS client `tests/tls.rs` connects with.
+# The TLS client `tests/tls.rs` connects with, and the certificate it trusts.
 tokio-rustls.workspace = true
+ulo-test-certs = { path = "../ulo-test-certs" }

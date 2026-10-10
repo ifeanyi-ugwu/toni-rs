@@ -1,7 +1,8 @@
 //! The RPC conformance suite over the TCP link with the server speaking TLS. The client side speaks
 //! none (`Tcp::tls` sets a server's certificate), so it reaches the server through the relay
-//! `disrupt` cuts and then a bridge that carries each connection on over TLS, checking the
-//! server's certificate against the test CA. The certificate is `ulo-net`'s test fixture.
+//! `disrupt` cuts and then a bridge that carries each connection on over TLS, trusting the server's
+//! certificate directly. The certificate is `ulo-test-certs`' self-signed one for `localhost`,
+//! made when the suite runs.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
@@ -11,16 +12,12 @@ use tokio::task::JoinHandle;
 use tokio_rustls::TlsConnector;
 use ulo::BoundAddr;
 use ulo_net::Tls;
-use ulo_net::rustls::pki_types::pem::PemObject;
-use ulo_net::rustls::pki_types::{CertificateDer, ServerName};
-use ulo_net::rustls::{self, ClientConfig, RootCertStore};
+use ulo_net::rustls::pki_types::ServerName;
+use ulo_net::rustls::{self, ClientConfig};
 use ulo_rpc_conformance::relay::Relay;
 use ulo_rpc_conformance::{Broker, startup_failed};
 use ulo_rpc_tcp::Tcp;
-
-const CA: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/ca.pem");
-const CERT: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/localhost.pem");
-const KEY: &[u8] = include_bytes!("../../ulo-net/tests/fixtures/localhost-key.pem");
+use ulo_test_certs::localhost;
 
 struct TlsLoopback {
     relay: Relay,
@@ -38,7 +35,8 @@ impl Broker for TlsLoopback {
 
     /// Port 0, with the test certificate.
     fn link(&self) -> Tcp {
-        Tcp::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).tls(Tls::from_pem(CERT, KEY))
+        let cert = localhost();
+        Tcp::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).tls(Tls::from_pem(cert.cert_pem(), cert.key_pem()))
     }
 
     /// Through the relay, then the bridge, aimed at the address the server bound.
@@ -91,8 +89,7 @@ impl Drop for Bridge {
 }
 
 fn client_config() -> ClientConfig {
-    let mut roots = RootCertStore::empty();
-    roots.add(CertificateDer::from_pem_slice(CA).expect("the CA parses")).expect("the CA is a trust anchor");
+    let roots = localhost().roots();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
