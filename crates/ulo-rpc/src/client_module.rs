@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ulo::{Bound, BoxError, Dep, Module, ModuleDef, ModuleIdentity, Runtime};
+use ulo::{Bound, Dep, Module, ModuleDef, ModuleIdentity, Runtime};
 
-use crate::client::RpcClient;
+use crate::client::{RpcClient, ZeroTimeout};
 use crate::link::Link;
 
 /// Binds `RpcClient` over link `L`, exported, usually keyed so two clients coexist:
@@ -45,7 +45,8 @@ impl<L: Link> RpcClientModule<L> {
     }
 
     /// Every call's timeout unless the call sets its own: five seconds at `Bound::Default`,
-    /// `Bound::Unbounded` for none. `Bound::After(Duration::ZERO)` is refused when the app wires.
+    /// `Bound::Unbounded` for none. `Bound::After(Duration::ZERO)` is refused when the app wires, as
+    /// [`ZeroTimeout`].
     pub fn timeout(mut self, timeout: Bound) -> Self {
         self.timeout = timeout;
         self
@@ -61,13 +62,7 @@ impl<L: Link> Module for RpcClientModule<L> {
         if self.timeout == Bound::After(Duration::ZERO) {
             // A module has no `prepare`; the refusal is recorded for `wire()` to report beside every
             // other wiring error.
-            let refusal: Result<RpcClient, BoxError> = Err(format!(
-                "`RpcClientModule::timeout(Bound::After(Duration::ZERO))` on the {} link would time out every call; \
-                 write `Bound::Unbounded` to turn the timeout off",
-                L::NAME
-            )
-            .into());
-            m.try_value(refusal);
+            m.try_value::<RpcClient, _>(Err(ZeroTimeout::of_module(L::NAME)));
         } else {
             let link = Arc::clone(&self.link);
             let closing = Arc::clone(&self.link);

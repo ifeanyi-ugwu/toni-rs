@@ -51,6 +51,40 @@ fn timeout_of(timeout: Bound) -> Option<Duration> {
     }
 }
 
+/// A zero timeout given to an RPC client, which would time out every call:
+/// `Bound::After(Duration::ZERO)` refused by [`RpcClient::timeout`] where it is written, and by
+/// `RpcClientModule::timeout` when the app wires. `Bound::Unbounded` is the spelling of no
+/// timeout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZeroTimeout {
+    setter: &'static str,
+    link: &'static str,
+}
+
+impl ZeroTimeout {
+    pub(crate) fn of_module(link: &'static str) -> Self {
+        ZeroTimeout { setter: "RpcClientModule::timeout", link }
+    }
+
+    /// The link's name, `Link::NAME`.
+    pub fn link(&self) -> &'static str {
+        self.link
+    }
+}
+
+impl fmt::Display for ZeroTimeout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "`{}(Bound::After(Duration::ZERO))` on the {} link would time out every call; write `Bound::Unbounded` to turn the \
+             timeout off",
+            self.setter, self.link
+        )
+    }
+}
+
+impl Error for ZeroTimeout {}
+
 /// A client of one link, bound by `RpcClientModule` as `Dep<RpcClient, Billing>` under the
 /// module's qualifier, or built outside an app with [`RpcClient::new`]. Cheap to clone. Its tasks
 /// and every timeout run on the runtime it was given, the app's inside an app; dropping a pending
@@ -131,7 +165,7 @@ impl RpcClient {
     ///
     /// ```ignore
     /// let billing = RpcClient::new(ulo_rpc_tcp::Tcp::new("billing:7000"), Arc::new(ulo_tokio::Tokio::current()))
-    ///     .timeout(Bound::After(Duration::from_secs(2)));
+    ///     .timeout(Bound::After(Duration::from_secs(2)))?;
     /// ```
     ///
     /// The client owns the link. Once its last clone and the last call it made are dropped, it
@@ -178,19 +212,15 @@ impl RpcClient {
     /// handle and the clones made from it after carry it; clones made before keep theirs, sharing
     /// the connection all the same.
     ///
-    /// # Panics
-    ///
-    /// On `Bound::After(Duration::ZERO)`, which would time out every call, as `RpcClientModule`
-    /// refuses it when the app wires.
-    pub fn timeout(mut self, timeout: Bound) -> Self {
-        assert!(
-            timeout != Bound::After(Duration::ZERO),
-            "`RpcClient::timeout(Bound::After(Duration::ZERO))` on the {} link would time out every call; \
-             write `Bound::Unbounded` to turn the timeout off",
-            self.inner.link
-        );
+    /// `Bound::After(Duration::ZERO)`, which would time out every call, is refused as
+    /// [`ZeroTimeout`], and the handle with it, so `RpcClient::new(link, runtime).timeout(b)?`
+    /// fails on the line that wrote the zero. `RpcClientModule` refuses it when the app wires.
+    pub fn timeout(mut self, timeout: Bound) -> Result<Self, ZeroTimeout> {
+        if timeout == Bound::After(Duration::ZERO) {
+            return Err(ZeroTimeout { setter: "RpcClient::timeout", link: self.inner.link });
+        }
         self.timeout = timeout_of(timeout);
-        self
+        Ok(self)
     }
 
     /// A request answered by one reply.

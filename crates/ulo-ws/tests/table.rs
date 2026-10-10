@@ -3,6 +3,10 @@
 //! connection through `Switch::serve` on one end of an in-memory pipe, a WebSocket client
 //! speaking on the other. This is the whole of what a server on another HTTP stack or runtime
 //! writes around the table.
+//!
+//! A server whose write of the 101 fails is the host here too: the connection hooks stay paired,
+//! `on_disconnect` running once with `Lost` for a connection whose `OnConnect` ran in the
+//! handshake, and nothing running for one whose connection phase had not begun.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -12,7 +16,7 @@ use http::header::{ALLOW, CONTENT_TYPE, HeaderValue, SEC_WEBSOCKET_ACCEPT, SEC_W
 use http::request::Parts;
 use http::{Method, StatusCode, Version};
 use serde_json::{Value, json};
-use tokio::io::DuplexStream;
+use tokio::io::{AsyncWriteExt, DuplexStream};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -20,7 +24,7 @@ use ulo::app::Bound as Serving;
 use ulo::{App, AppHandle, BoxError, DrainToken, Module, ModuleDef, ModuleIdentity, Mounted, Signal, injectable, routes};
 use ulo_http::Upgraded;
 use ulo_transport::prepare::Failures;
-use ulo_ws::{ConnectCx, ConnectRefused, Connection, GatewayDefaults, GatewayTable, Handshake, OnConnect, Ws};
+use ulo_ws::{ConnId, ConnectCx, ConnectRefused, Connection, DisconnectReason, GatewayDefaults, GatewayTable, Handshake, OnConnect, OnDisconnect, Ws};
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -64,8 +68,95 @@ impl OnConnect for Held {
     }
 }
 
+/// Each connection hook that ran, in order, on `Paired` and `Loose`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Hook {
+    Connected(ConnId),
+    Disconnected(ConnId, DisconnectReason),
+}
+
+#[derive(Clone, Default)]
+struct Hooks(Arc<Mutex<Vec<Hook>>>);
+
+impl Hooks {
+    fn push(&self, hook: Hook) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).push(hook);
+    }
+
+    fn all(&self) -> Vec<Hook> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The connection the last `OnConnect` admitted.
+    fn last_connected(&self) -> ConnId {
+        self.all()
+            .iter()
+            .rev()
+            .find_map(|hook| match hook {
+                Hook::Connected(id) => Some(*id),
+                Hook::Disconnected(..) => None,
+            })
+            .expect("`OnConnect` ran")
+    }
+}
+
+/// Runs its connection phase in the handshake, one connection at a time.
+#[injectable]
+struct Paired {
+    hooks: ulo::Dep<Hooks>,
+}
+
+#[routes]
+#[ulo_ws::gateway(path = "/paired", port = own, refuse = handshake, max_connections = 1)]
+impl Paired {
+    #[ulo_ws::message("echo")]
+    fn echo(&self, text: ulo_ws::Payload<String>) -> String {
+        text.0
+    }
+}
+
+impl OnConnect for Paired {
+    async fn on_connect(&self, cx: &ConnectCx) -> Result<(), ConnectRefused> {
+        self.hooks.push(Hook::Connected(cx.conn().id()));
+        Ok(())
+    }
+}
+
+impl OnDisconnect for Paired {
+    async fn on_disconnect(&self, conn: &Connection, why: DisconnectReason) {
+        self.hooks.push(Hook::Disconnected(conn.id(), why));
+    }
+}
+
+/// Runs its connection phase once the connection is upgraded.
+#[injectable]
+struct Loose {
+    hooks: ulo::Dep<Hooks>,
+}
+
+#[routes]
+#[ulo_ws::gateway(path = "/loose", port = own)]
+impl Loose {
+    #[ulo_ws::message("noop")]
+    fn noop(&self) {}
+}
+
+impl OnConnect for Loose {
+    async fn on_connect(&self, cx: &ConnectCx) -> Result<(), ConnectRefused> {
+        self.hooks.push(Hook::Connected(cx.conn().id()));
+        Ok(())
+    }
+}
+
+impl OnDisconnect for Loose {
+    async fn on_disconnect(&self, conn: &Connection, why: DisconnectReason) {
+        self.hooks.push(Hook::Disconnected(conn.id(), why));
+    }
+}
+
 struct Root {
     joined: Joined,
+    hooks: Hooks,
 }
 
 impl Module for Root {
@@ -75,8 +166,11 @@ impl Module for Root {
 
     fn register(&self, m: &mut ModuleDef<'_>) {
         m.value(self.joined.clone());
+        m.value(self.hooks.clone());
         m.controller::<Plain>();
         m.controller::<Held>();
+        m.controller::<Paired>();
+        m.controller::<Loose>();
     }
 }
 
@@ -130,6 +224,7 @@ impl ulo::Server for TableServer {
 struct Running {
     table: GatewayTable,
     joined: Joined,
+    hooks: Hooks,
     handle: AppHandle,
     serving: tokio::task::JoinHandle<()>,
 }
@@ -137,7 +232,8 @@ struct Running {
 async fn start() -> Running {
     let slot = Arc::new(Mutex::new(None));
     let joined = Joined::default();
-    let app: App<Serving> = App::builder(Root { joined: joined.clone() })
+    let hooks = Hooks::default();
+    let app: App<Serving> = App::builder(Root { joined: joined.clone(), hooks: hooks.clone() })
         .runtime(ulo_tokio::Tokio::current())
         .drain_timeout(Duration::from_secs(2))
         .wire()
@@ -154,7 +250,7 @@ async fn start() -> Running {
     let serving = tokio::spawn(async move {
         let _ = app.serve(std::future::pending::<Signal>()).await;
     });
-    Running { table, joined, handle, serving }
+    Running { table, joined, hooks, handle, serving }
 }
 
 impl Running {
@@ -265,6 +361,124 @@ async fn a_switch_dropped_unserved_takes_its_admitted_connection_out_of_the_room
     let conn = app.joined.0.lock().unwrap_or_else(PoisonError::into_inner).pop().expect("`OnConnect` ran in the handshake");
     assert_eq!(conn.rooms(), vec!["lobby".to_owned()], "the connection phase joined the room before the 101");
     drop(switch);
-    assert!(conn.rooms().is_empty(), "a connection never served is still in its rooms: {:?}", conn.rooms());
+    // The connection leaves its rooms after its `on_disconnect`, on a task the drain waits for.
     app.stop().await;
+    assert!(conn.rooms().is_empty(), "a connection never served is still in its rooms: {:?}", conn.rooms());
+}
+
+/// The 101 as a server writes it, to a client that has already gone: the write fails.
+async fn write_the_101_to_a_departed_client() {
+    let (mut server, client) = tokio::io::duplex(64);
+    drop(client);
+    let written = server.write_all(b"HTTP/1.1 101 Switching Protocols\r\n\r\n").await;
+    assert!(written.is_err(), "the 101 was written to a client that had gone");
+}
+
+/// The hooks one connection ran, read once the app has closed, whose drain waits for every
+/// connection task, an unserved connection's `on_disconnect` included.
+fn hooks_of(hooks: &Hooks, id: ConnId) -> Vec<Hook> {
+    hooks
+        .all()
+        .into_iter()
+        .filter(|hook| match hook {
+            Hook::Connected(of) | Hook::Disconnected(of, _) => *of == id,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_switch_dropped_when_its_101_fails_to_write_runs_on_disconnect_once_as_lost() {
+    let app = start().await;
+    let hooks = app.hooks.clone();
+    let Handshake::Switch(switch) = app.table.handshake(head("/paired", |_| {}), None).await else {
+        panic!("the connection phase refused a valid upgrade request");
+    };
+    let id = hooks.last_connected();
+    write_the_101_to_a_departed_client().await;
+    drop(switch);
+    app.stop().await;
+    assert_eq!(hooks_of(&hooks, id), vec![Hook::Connected(id), Hook::Disconnected(id, DisconnectReason::Lost)]);
+}
+
+#[tokio::test]
+async fn an_upgrade_that_fails_after_the_switch_is_served_runs_on_disconnect_once_as_lost() {
+    let app = start().await;
+    let hooks = app.hooks.clone();
+    let Handshake::Switch(switch) = app.table.handshake(head("/paired", |_| {}), None).await else {
+        panic!("the connection phase refused a valid upgrade request");
+    };
+    let id = hooks.last_connected();
+    // hyper's shape: the upgrade future fails when the 101 cannot be written.
+    switch.serve(async move {
+        write_the_101_to_a_departed_client().await;
+        Err::<Upgraded, BoxError>("the 101 could not be written".into())
+    });
+    app.stop().await;
+    assert_eq!(hooks_of(&hooks, id), vec![Hook::Connected(id), Hook::Disconnected(id, DisconnectReason::Lost)]);
+}
+
+#[tokio::test]
+async fn a_failed_101_before_the_connection_phase_runs_no_hook() {
+    let app = start().await;
+    let hooks = app.hooks.clone();
+    let Handshake::Switch(dropped) = app.table.handshake(head("/loose", |_| {}), None).await else {
+        panic!("a valid upgrade request was refused");
+    };
+    let Handshake::Switch(failed) = app.table.handshake(head("/loose", |_| {}), None).await else {
+        panic!("a valid upgrade request was refused");
+    };
+    write_the_101_to_a_departed_client().await;
+    drop(dropped);
+    failed.serve(async move { Err::<Upgraded, BoxError>("the 101 could not be written".into()) });
+    app.stop().await;
+    assert_eq!(hooks.all(), Vec::new(), "a hook ran for a connection whose connection phase never began");
+}
+
+#[tokio::test]
+async fn a_connection_closed_over_max_connections_after_its_on_connect_runs_on_disconnect() {
+    let app = start().await;
+    let hooks = app.hooks.clone();
+    let Handshake::Switch(first) = app.table.handshake(head("/paired", |_| {}), None).await else {
+        panic!("the connection phase refused a valid upgrade request");
+    };
+    let (server, mut holder) = pipe().await;
+    first.serve(async move { Ok::<_, BoxError>(Upgraded::from_tokio(server)) });
+    // An answer shows the first connection holds the gateway's one slot.
+    let message = json!({ "event": "echo", "id": 1, "data": "holding" }).to_string();
+    holder.send(Message::text(message)).await.expect("the message was sent");
+    within("the holder's reply", holder.next()).await.expect("the connection ended").expect("a read failed");
+
+    let Handshake::Switch(second) = app.table.handshake(head("/paired", |_| {}), None).await else {
+        panic!("the connection phase refused a valid upgrade request");
+    };
+    let id = hooks.last_connected();
+    let (server, mut over) = pipe().await;
+    second.serve(async move { Ok::<_, BoxError>(Upgraded::from_tokio(server)) });
+    let close = within("the second connection's close", over.next()).await.expect("the connection ended").expect("a read failed");
+    let Message::Close(Some(frame)) = close else { panic!("expected a Close frame, got {close:?}") };
+    assert_eq!(u16::from(frame.code), 1013, "{frame:?}");
+    // Read to the end, which sends the client's answering Close the server waits for.
+    within("the second connection's end", async { while let Some(Ok(_)) = over.next().await {} }).await;
+    let _ = holder.close(None).await;
+    within("the holder's end of the connection", async { while let Some(Ok(_)) = holder.next().await {} }).await;
+    app.stop().await;
+    assert_eq!(hooks_of(&hooks, id), vec![Hook::Connected(id), Hook::Disconnected(id, DisconnectReason::ServerClose { code: 1013 })]);
+}
+
+/// The table's own refusal at the drain: the one a standalone server writes, the HTTP server's
+/// port answering with that server's own 503 first. It comes before the connection phase, which
+/// runs for no gateway once the drain has begun.
+#[tokio::test]
+async fn a_handshake_once_the_drain_has_begun_is_refused_503_before_the_connection_phase() {
+    let app = start().await;
+    let (table, hooks) = (app.table.clone(), app.hooks.clone());
+    app.stop().await;
+    for path in ["/plain", "/paired"] {
+        let Handshake::Refuse(refusal) = table.handshake(head(path, |_| {}), None).await else {
+            panic!("{path}: a handshake once the drain had begun was accepted");
+        };
+        assert_eq!(refusal.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(refusal.reason(), "the server is shutting down", "{path}");
+    }
+    assert_eq!(hooks.all(), Vec::new(), "the connection phase ran once the drain had begun");
 }

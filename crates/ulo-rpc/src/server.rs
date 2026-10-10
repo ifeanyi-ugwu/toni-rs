@@ -12,6 +12,7 @@ use futures_util::{FutureExt, StreamExt};
 use ulo::{Bound, BoundAddr, BoxError, DrainToken, MountedHandler, Mounted, Shape, Spawn, TypeName};
 use ulo_transport::prepare::{Failure, Failures, Names, zero_bound, zero_count};
 use ulo_transport::{Admission, Count, TaskSet};
+use ulo_transport::__private::Watch;
 
 use crate::__private::{Kind, RpcHandler};
 use crate::codec::Codec;
@@ -19,7 +20,6 @@ use crate::dispatch::{self, Route, Settling, Shared};
 use crate::frame::PayloadKind;
 use crate::link::{Delivery, Inbound, Link, Pattern};
 use crate::transport::Rpc;
-use crate::watch::Watch;
 
 /// `timeout_grace` at `Bound::Default`, the HTTP server's.
 const DEFAULT_TIMEOUT_GRACE: Duration = Duration::from_secs(1);

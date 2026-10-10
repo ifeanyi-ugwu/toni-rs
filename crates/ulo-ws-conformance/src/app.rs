@@ -7,6 +7,7 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use event_listener::Event;
 use futures_util::future::{Either, select};
@@ -48,9 +49,14 @@ pub(crate) const DISCARDED: &str = "discarded";
 
 /// `fut`'s output, or a failure naming `what` once [`PATIENCE`] has passed on `timer`'s clock.
 pub(crate) async fn within<F: Future>(timer: &dyn Timer, what: &str, fut: F) -> F::Output {
-    match select(pin!(fut), timer.sleep(PATIENCE)).await {
+    within_for(timer, PATIENCE, what, fut).await
+}
+
+/// [`within`] for a wait whose bound is `limit` rather than [`PATIENCE`].
+pub(crate) async fn within_for<F: Future>(timer: &dyn Timer, limit: Duration, what: &str, fut: F) -> F::Output {
+    match select(pin!(fut), timer.sleep(limit)).await {
         Either::Left((output, _)) => output,
-        Either::Right(_) => panic!("{what} did not happen within {PATIENCE:?}"),
+        Either::Right(_) => panic!("{what} did not happen within {limit:?}"),
     }
 }
 

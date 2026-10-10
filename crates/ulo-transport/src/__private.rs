@@ -1,5 +1,6 @@
-//! Support for the code a transport's handler attribute generates through `ulo-handler-codegen`.
-//! Not part of the public API: names and shapes here change with the codegen.
+//! Support for the code a transport's handler attribute generates through `ulo-handler-codegen`,
+//! and the primitives the transport crates share ([`Watch`]). Not part of the public API: names
+//! and shapes here change with the codegen and the transports.
 
 use std::cell::Cell;
 use std::future::Future;
@@ -11,6 +12,8 @@ use ulo::{BoxError, Dep, Dependencies, ExecutionRef, FromContainer, Transport};
 use crate::error::{CallError, ErrorKind};
 use crate::extract::{ExtractError, FromCall, Injected};
 use crate::reply::IntoReply;
+
+pub use crate::watch::Watch;
 
 /// The marker of a parameter read from the call.
 pub enum ViaCall {}

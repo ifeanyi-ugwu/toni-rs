@@ -158,8 +158,9 @@ impl GatewayTable {
     /// The decision on one upgrade request, made from its head alone: the gateway at its path
     /// (404 when none), RFC 6455's checks (405 for a method other than GET, 400 for HTTP/1.0, a
     /// missing `Connection: Upgrade`, `Upgrade: websocket` or `Sec-WebSocket-Key`, 426 for a
-    /// version other than 13), 503 once the drain has begun, and the first of the gateway's
-    /// subprotocols the client offered. Under `refuse = handshake` the connection phase runs
+    /// version other than 13), 503 once the drain has begun (on the HTTP server's port that
+    /// server's own drain answers first), and the first of the gateway's subprotocols the client
+    /// offered. Under `refuse = handshake` the connection phase runs
     /// here, its connect guards and `OnConnect`, and a refusal is its 401 or 403.
     ///
     /// `peer` is the client's address, which `ConnectionInfo::peer` reports.

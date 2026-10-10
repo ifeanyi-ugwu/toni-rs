@@ -27,14 +27,13 @@ mod extract;
 mod frame;
 mod server;
 mod transport;
-mod watch;
 
 pub mod link;
 
 #[doc(hidden)]
 pub mod __private;
 
-pub use client::{Call, Emit, RpcClient, RpcError, RpcStream, StreamCall};
+pub use client::{Call, Emit, RpcClient, RpcError, RpcStream, StreamCall, ZeroTimeout};
 pub use client_module::RpcClientModule;
 pub use codec::Codec;
 pub use extract::{Inbound, Payload};

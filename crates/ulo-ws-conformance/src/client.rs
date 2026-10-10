@@ -113,42 +113,66 @@ pub(crate) async fn write<S: AsyncWrite + Unpin>(stream: &mut S, text: &str) {
 /// `Sec-WebSocket-Accept` RFC 6455 §4.2.2 derives from that key, and the stream continues as the
 /// client's socket. A refusal's body is read by its `Content-Length`, or its chunks.
 pub(crate) async fn read_answer<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, key: &str) -> Answer<S> {
+    let (status, headers) = read_head(&mut stream).await;
+    let mut answer = Answer { status, headers, body: String::new(), socket: None };
+    if status == 101 {
+        let expected = derive_accept_key(key.as_bytes());
+        assert_eq!(answer.header("sec-websocket-accept"), Some(expected.as_str()), "the 101 carries the wrong `Sec-WebSocket-Accept`");
+        answer.socket = Some(WebSocketStream::from_raw_socket(stream, Role::Client, None).await);
+    } else {
+        answer.body = read_body(&mut stream, &answer.headers).await;
+    }
+    answer
+}
+
+/// Reads one response that switches no protocol, its body by its `Content-Length` or its chunks,
+/// and leaves `stream` where the next response would begin.
+pub(crate) async fn read_response<S: AsyncRead + Unpin>(stream: &mut S) -> Answer<S> {
+    let (status, headers) = read_head(stream).await;
+    let body = read_body(stream, &headers).await;
+    Answer { status, headers, body, socket: None }
+}
+
+/// A response's status and its headers with lowercase names, in the order written.
+async fn read_head<S: AsyncRead + Unpin>(stream: &mut S) -> (u16, Vec<(String, String)>) {
     // One byte at a time, so nothing after the head, a Close frame sent right after the 101 for
     // one, is taken from the stream the socket continues on.
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
         let mut byte = [0u8];
         stream.read_exact(&mut byte).await.unwrap_or_else(|error| {
-            panic!("reading the upgrade response failed after {:?}: {error}", String::from_utf8_lossy(&head))
+            panic!("reading the response failed after {:?}: {error}", String::from_utf8_lossy(&head))
         });
         head.push(byte[0]);
     }
-    let head = String::from_utf8(head).unwrap_or_else(|error| panic!("the upgrade response head is not UTF-8: {error}"));
+    let head = String::from_utf8(head).unwrap_or_else(|error| panic!("the response head is not UTF-8: {error}"));
     let mut lines = head.split("\r\n");
     let status_line = lines.next().unwrap_or_default();
     let status: u16 = status_line
         .split(' ')
         .nth(1)
         .and_then(|code| code.parse().ok())
-        .unwrap_or_else(|| panic!("the upgrade response's status line is malformed: {status_line:?}"));
-    let headers: Vec<(String, String)> = lines
+        .unwrap_or_else(|| panic!("the response's status line is malformed: {status_line:?}"));
+    let headers = lines
         .filter(|line| !line.is_empty())
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
         .collect();
-    let mut answer = Answer { status, headers, body: String::new(), socket: None };
-    if status == 101 {
-        let expected = derive_accept_key(key.as_bytes());
-        assert_eq!(answer.header("sec-websocket-accept"), Some(expected.as_str()), "the 101 carries the wrong `Sec-WebSocket-Accept`");
-        answer.socket = Some(WebSocketStream::from_raw_socket(stream, Role::Client, None).await);
-    } else if let Some(length) = answer.header("content-length").and_then(|length| length.parse::<usize>().ok()) {
+    (status, headers)
+}
+
+/// A response's body, by its `Content-Length` or its chunks; empty with neither.
+async fn read_body<S: AsyncRead + Unpin>(stream: &mut S, headers: &[(String, String)]) -> String {
+    let header = |name: &str| headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+    if let Some(length) = header("content-length").and_then(|length| length.parse::<usize>().ok()) {
         let mut body = vec![0; length];
-        stream.read_exact(&mut body).await.unwrap_or_else(|error| panic!("reading the refusal's body failed: {error}"));
-        answer.body = String::from_utf8_lossy(&body).into_owned();
-    } else if answer.header("transfer-encoding").is_some_and(|coding| coding.eq_ignore_ascii_case("chunked")) {
-        answer.body = chunked(&mut stream).await;
+        stream.read_exact(&mut body).await.unwrap_or_else(|error| panic!("reading the response's body failed: {error}"));
+        String::from_utf8_lossy(&body).into_owned()
+    } else if header("transfer-encoding").is_some_and(|coding| coding.eq_ignore_ascii_case("chunked")) {
+        chunked(stream).await
+    } else {
+        String::new()
     }
-    answer
 }
 
 /// A chunked body, read to its last chunk.

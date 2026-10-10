@@ -26,6 +26,10 @@ use crate::table::GatewayDefaults;
 /// A gateway's mount records handlers and cannot bind, which is why the module exists: without it
 /// a gateway on the HTTP server's port is reachable by nothing and `Dep<Rooms>` is a missing
 /// dependency at `wire()`.
+///
+/// On the HTTP port, the HTTP server's drain and load shedding answer first: an upgrade request
+/// arriving once the drain has begun, or over the HTTP server's `max_inflight`, gets the HTTP
+/// server's 503 before the hand-off sees it.
 #[derive(Clone)]
 pub struct WsModule {
     pub(crate) adapter: Arc<dyn BroadcastAdapter>,

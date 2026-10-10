@@ -20,6 +20,8 @@ impl Host for HttpPort {
     type Stream = Upgraded;
 
     const PORT: Port = Port::Http;
+    // `ulo-http-hyper` starts hyper's graceful shutdown on every connection at the drain, which closes one idle between requests.
+    const CLOSES_IDLE_AT_DRAIN: bool = true;
 
     fn runtime() -> Tokio {
         Tokio::current()

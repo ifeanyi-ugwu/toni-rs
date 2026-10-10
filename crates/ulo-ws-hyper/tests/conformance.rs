@@ -19,6 +19,8 @@ impl Host for Standalone {
     type Stream = Upgraded;
 
     const PORT: Port = Port::Own;
+    // `ulo-hyper-serve` starts hyper's graceful shutdown on every connection at the drain, which closes one idle between requests.
+    const CLOSES_IDLE_AT_DRAIN: bool = true;
 
     fn runtime() -> Tokio {
         Tokio::current()

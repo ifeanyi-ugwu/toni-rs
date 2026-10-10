@@ -33,7 +33,6 @@ mod rooms;
 mod session;
 mod table;
 mod transport;
-mod watch;
 
 #[doc(hidden)]
 pub mod __private;

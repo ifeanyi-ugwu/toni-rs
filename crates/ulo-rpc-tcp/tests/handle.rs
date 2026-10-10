@@ -111,7 +111,9 @@ async fn a_link_given_a_handle_on_a_plain_thread_is_called_from_there() {
     let thread = thread::spawn(move || {
         assert!(Handle::try_current().is_err(), "the plain thread has a tokio runtime current");
         let link = Tcp::new(addr).with_handle(runtime.clone());
-        let client = RpcClient::new(link, Arc::new(Tokio::from_handle(runtime))).timeout(Bound::After(Duration::from_secs(5)));
+        let client = RpcClient::new(link, Arc::new(Tokio::from_handle(runtime)))
+            .timeout(Bound::After(Duration::from_secs(5)))
+            .expect("a nonzero timeout is taken");
         futures_executor::block_on(async { client.request::<_, u32>("handle.add", &41u32).await })
     });
     let answer = tokio::task::spawn_blocking(move || thread.join()).await.expect("the join completes");

@@ -20,8 +20,6 @@ ciborium.workspace = true
 # No runtime here, as in the core: tasks are spawned through the app's `Runtime`, and these are
 # the runtime-free primitives in place of `tokio::sync`. The client's connection lock.
 async-lock.workspace = true
-# The server's close signal and drain state, the primitive `async-lock` is built on.
-event-listener.workspace = true
 # A streamed request's items and each call's reply frames.
 futures-channel.workspace = true
 futures-core.workspace = true

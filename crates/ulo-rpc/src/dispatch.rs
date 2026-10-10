@@ -34,13 +34,13 @@ use ulo::{
     MountedHandler, Runtime, Shape, Timer, Transport,
 };
 use ulo_transport::{Admission, CallError, Detail, Details, ErrorKind, Permit, TaskSet, Tracked, span};
+use ulo_transport::__private::Watch;
 
 use crate::__private::{HandlerFn, Kind};
 use crate::codec::Codec;
 use crate::frame::{Data, ErrorBody, Frame};
 use crate::link::{Ack, Capabilities, Delivery, DeliveryMode, FrameTooLarge, FrameUnencodable, Pattern, ReplyPath};
 use crate::transport::{Body, CallHeaders, CxInner, LinkInfo, NoHandler, Reply, Rpc, RpcCx};
-use crate::watch::Watch;
 
 /// The `ErrorInfo` domain of every reason this transport writes.
 pub(crate) const DOMAIN: &str = "ulo.rpc";

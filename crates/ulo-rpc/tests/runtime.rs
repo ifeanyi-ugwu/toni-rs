@@ -3,7 +3,7 @@
 //! built outside an app closes its link from a task on the runtime it holds when it is dropped,
 //! or, when that runtime drops the task unrun, releases its connection and warns. A client built
 //! outside an app takes its default timeout from `RpcClient::timeout`, as a module's takes it from
-//! `RpcClientModule::timeout`.
+//! `RpcClientModule::timeout`, and both refuse a zero as `ZeroTimeout`.
 //!
 //! The [`Capture`] installed as the global subscriber tells one test's events from another's by
 //! the thread, for the reason `drain_window.rs` gives: tracing caches a callsite's interest from
@@ -19,9 +19,9 @@ use tokio::sync::Notify;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event as TraceEvent, Level, Metadata};
-use ulo::{App, Bound, BoxError, Module, ModuleDef, ModuleIdentity, RuntimeMissing, StartupError};
+use ulo::{App, Bound, BoxError, Module, ModuleDef, ModuleIdentity, RuntimeMissing, StartupError, WiringError};
 use ulo_rpc::link::Inbound;
-use ulo_rpc::{Capabilities, DeliveryMode, Link, Outbound, Pattern, RpcClient, RpcClientModule};
+use ulo_rpc::{Capabilities, DeliveryMode, Link, Outbound, Pattern, RpcClient, RpcClientModule, ZeroTimeout};
 use ulo_transport::ErrorKind;
 use ulo_tokio::Tokio;
 
@@ -157,19 +157,62 @@ async fn a_client_built_outside_an_app_times_out_at_its_own_timeout() {
     let client = RpcClient::new(Observed(Arc::default()), Arc::new(Tokio::current()));
     let default = timed_out_after(client.clone()).await;
     assert_eq!(default, Some(Duration::from_secs(5)), "a client from `RpcClient::new` with no `timeout`");
-    let shorter = timed_out_after(client.clone().timeout(Bound::After(Duration::from_millis(250)))).await;
+    let shorter = client.clone().timeout(Bound::After(Duration::from_millis(250))).expect("a nonzero timeout is taken");
+    let shorter = timed_out_after(shorter).await;
     assert_eq!(shorter, Some(Duration::from_millis(250)), "`RpcClient::timeout(Bound::After(250 ms))`");
-    let unbounded = timed_out_after(client.clone().timeout(Bound::Unbounded)).await;
+    let unbounded = client.clone().timeout(Bound::Unbounded).expect("no timeout is taken");
+    let unbounded = timed_out_after(unbounded).await;
     assert_eq!(unbounded, None, "`RpcClient::timeout(Bound::Unbounded)` timed a request out");
     let again = timed_out_after(client).await;
     assert_eq!(again, Some(Duration::from_secs(5)), "the client whose clones were given timeouts kept its own");
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[should_panic(expected = "`RpcClient::timeout(Bound::After(Duration::ZERO))` on the observed link would time out every call")]
 async fn a_zero_client_timeout_is_refused_where_it_is_written() {
     let client = RpcClient::new(Observed(Arc::default()), Arc::new(Tokio::current()));
-    let _ = client.timeout(Bound::After(Duration::ZERO));
+    let Err(refused) = client.timeout(Bound::After(Duration::ZERO)) else {
+        panic!("`RpcClient::timeout(Bound::After(Duration::ZERO))` was taken");
+    };
+    assert_eq!(refused.link(), "observed");
+    assert_eq!(
+        refused.to_string(),
+        "`RpcClient::timeout(Bound::After(Duration::ZERO))` on the observed link would time out every call; write \
+         `Bound::Unbounded` to turn the timeout off"
+    );
+}
+
+/// Imports one `RpcClientModule` whose timeout is zero.
+struct WithZeroTimeout;
+
+impl Module for WithZeroTimeout {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<Self>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        m.import(RpcClientModule::for_root(Observed(Arc::default())).timeout(Bound::After(Duration::ZERO)));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_zero_module_timeout_fails_wiring_as_the_same_refusal() {
+    let wired = App::builder(WithZeroTimeout).runtime(Tokio::current()).wire();
+    let Err(StartupError::Wiring(errors)) = wired else {
+        panic!("an `RpcClientModule` with a zero timeout wired");
+    };
+    let refused = errors
+        .iter()
+        .find_map(|error| match error {
+            WiringError::ValueFailed { error, .. } => error.downcast_ref::<ZeroTimeout>(),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no wiring error carries a `ZeroTimeout`: {errors}"));
+    assert_eq!(refused.link(), "observed");
+    assert_eq!(
+        refused.to_string(),
+        "`RpcClientModule::timeout(Bound::After(Duration::ZERO))` on the observed link would time out every call; write \
+         `Bound::Unbounded` to turn the timeout off"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

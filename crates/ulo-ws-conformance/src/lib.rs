@@ -11,6 +11,7 @@
 //!     type Runtime = ulo_tokio::Tokio;
 //!     type Stream = ulo_http::Upgraded;
 //!     const PORT: ulo_ws::Port = ulo_ws::Port::Own;
+//!     const CLOSES_IDLE_AT_DRAIN: bool = true; // hyper's graceful shutdown
 //!     fn runtime() -> ulo_tokio::Tokio { ulo_tokio::Tokio::current() }
 //!     fn block_on<F: Future>(fut: F) -> F::Output { /* a runtime of its own per scenario */ }
 //!     fn bind(app: App<Connected>) -> App<Connected> { app.bind(ulo_ws_hyper::Server::new("127.0.0.1:0")) }
@@ -90,6 +91,15 @@ pub trait Host: Sized + 'static {
     /// The gateways this server serves: `Port::Own` for a standalone server, `Port::Http` for one
     /// serving the HTTP server's port through the hand-off `WsModule` registers.
     const PORT: Port;
+
+    /// Whether the server closes a connection that is idle between requests when its drain
+    /// begins, rather than keeping it open and answering a request that arrives on it after.
+    /// hyper's graceful shutdown closes it. `false` unless a host declares it.
+    ///
+    /// `handshake_refuses_during_the_drain` reads it: on a host keeping the connection, an
+    /// upgrade request sent on it during the drain must be answered 503; on one closing it, the
+    /// connection must end with nothing written.
+    const CLOSES_IDLE_AT_DRAIN: bool = false;
 
     /// A runtime value; each scenario takes its own, built inside the future [`block_on`] runs, so
     /// a runtime that captures the executor it runs on finds it.

@@ -3,16 +3,18 @@
 //! before the upgrade under `refuse = handshake`.
 //!
 //! A request that carries no `Upgrade` header at all is no upgrade request: on the HTTP server's
-//! port the HTTP application answers it, so no scenario sends one. Each refusal here keeps the
-//! header and spoils something else.
+//! port the HTTP application answers it, so no refusal scenario sends one. Each refusal here keeps
+//! the header and spoils something else. The drain scenario sends one for a path no gateway
+//! serves, which both servers answer 404, to show its connection accepted.
 
+use futures_util::AsyncReadExt;
 use serde_json::json;
 use ulo_ws::Port;
 
 use super::Served;
-use crate::Host;
-use crate::app::{TOKEN, USER, WHO};
-use crate::client::{Answer, Request, read_answer, write};
+use crate::app::{TOKEN, USER, WHO, within_for};
+use crate::{DRAIN, Host};
+use crate::client::{Answer, Request, read_answer, read_response, write};
 
 /// RFC 6455 §1.3's sample key and the accept value it derives.
 const RFC_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
@@ -83,33 +85,49 @@ pub async fn version<H: Host>() {
     app.stop().await;
 }
 
-/// The drain refuses an upgrade 503. A server stops accepting connections when its drain begins,
-/// and drops those still queued unaccepted, so the request travels on a connection the server
-/// accepted before it: one opened before the idle WebSocket connection whose 101 then arrives,
-/// since one listener accepts in arrival order. Its head is left unfinished until that idle
-/// connection's 1001 shows the drain has begun.
+/// The drain refuses an upgrade. The connection is shown accepted before the drain by an ordinary
+/// request answered on it, for a path no gateway serves, which either server answers 404; once
+/// an idle WebSocket connection's 1001 shows the drain has begun, the upgrade request goes on the
+/// same connection, so no accept order is assumed.
 ///
-/// A standalone server writes the handshake's own refusal. On the HTTP server's port the HTTP
-/// server's drain answers every request before any upgrade handler sees it, with its own 503
-/// document, so there the status alone is asserted, as for a path without a gateway.
+/// A server that keeps the connection open answers the upgrade 503: a standalone server with the
+/// handshake's own refusal, and the HTTP server's port with the HTTP server's own 503. A host that
+/// declares [`Host::CLOSES_IDLE_AT_DRAIN`] closes the connection when its drain begins instead,
+/// which is read as the stream's end with nothing written on it.
 pub async fn draining<H: Host>() {
     let app = Served::<H>::start().await;
-    let request = Request::upgrade("/echo");
-    let head = request.head(&app.host());
-    let (start, rest) = head.split_at(head.find("\r\n").map_or(0, |line| line + 2));
-    let mut pending = app.stream().await;
-    write(&mut pending, start).await;
+    let mut conn = app.stream().await;
+    write(&mut conn, &format!("GET /nowhere HTTP/1.1\r\nHost: {}\r\n\r\n", app.host())).await;
+    let before = crate::app::within(app.timer(), "the answer to a request before the drain", read_response(&mut conn)).await;
+    assert_eq!(before.status, 404, "a request for a path no gateway serves, before the drain: {}", before.body);
     let mut idle = app.connect("/echo", &[]).await;
 
     let closing = app.close_in_background();
     assert_eq!(idle.close_frame().await, Some((1001, "server shutting down".to_owned())), "the drain's close");
-    write(&mut pending, rest).await;
-    let answer = crate::app::within(app.timer(), "the answer to an upgrade request finished during the drain", read_answer(pending, request.sent_key())).await;
-    match H::PORT {
-        Port::Own => refused("an upgrade request during the drain", &answer, 503),
-        Port::Http => {
-            assert_eq!(answer.status, 503, "an upgrade request during the drain: {}", answer.body);
-            assert!(answer.socket.is_none(), "an upgrade request during the drain switched protocols");
+    if H::CLOSES_IDLE_AT_DRAIN {
+        // Bounded by half the drain window: a server that ends the connection only when the
+        // window runs out, by aborting it, has kept it open through the drain.
+        let mut written = Vec::new();
+        let read = within_for(app.timer(), DRAIN / 2, "the end of the connection idle at the drain", conn.read_to_end(&mut written)).await;
+        assert!(
+            written.is_empty(),
+            "a connection idle at the drain was written to rather than closed ({read:?}): {:?}",
+            String::from_utf8_lossy(&written)
+        );
+    } else {
+        let request = Request::upgrade("/echo");
+        write(&mut conn, &request.head(&app.host())).await;
+        let answer =
+            crate::app::within(app.timer(), "the answer to an upgrade request during the drain", read_answer(conn, request.sent_key())).await;
+        match H::PORT {
+            Port::Own => refused("an upgrade request during the drain", &answer, 503),
+            Port::Http => {
+                // The status alone: on the HTTP port, the HTTP server's drain and load shedding
+                // answer first, with the HTTP server's own 503 (F368; the rule is stated in
+                // `ulo-ws`'s hand-off docs, `WsModule`'s among them).
+                assert_eq!(answer.status, 503, "an upgrade request during the drain: {}", answer.body);
+                assert!(answer.socket.is_none(), "an upgrade request during the drain switched protocols");
+            }
         }
     }
     idle.hang_up().await;

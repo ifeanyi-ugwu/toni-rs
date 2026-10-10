@@ -40,8 +40,9 @@ const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// `prepare` builds the [`GatewayTable`] of the gateways declared `port = own`, refusing what the
 /// table refuses, a server with no such gateway among it, and every zero limit; it resolves the
-/// endpoints and loads TLS. `bind` binds every endpoint, all-or-nothing. A request off the
-/// gateway paths is answered 404.
+/// endpoints and loads TLS. Its failures are reported together, always in one order: the server's
+/// two timeouts, what the table refuses, the endpoints, then TLS. `bind` binds every endpoint,
+/// all-or-nothing. A request off the gateway paths is answered 404.
 ///
 /// It serves the gateways declared `port = own`; the others are the HTTP server's, through the
 /// hand-off `WsModule` registers. Rooms and broadcasts are the application's `WsModule`'s; an

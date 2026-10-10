@@ -21,7 +21,7 @@ use async_tungstenite::tungstenite::protocol::{CloseFrame, Role, WebSocketConfig
 use async_tungstenite::tungstenite::{Error as WsError, Message};
 use bytes::Bytes;
 use event_listener::{Event, EventListener};
-use futures_channel::mpsc;
+use futures_channel::{mpsc, oneshot};
 use futures_core::stream::BoxStream;
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::future::{self, Either};
@@ -36,6 +36,7 @@ use ulo::{
     ModuleRef, MountedHandler, Runtime, Spawn, TaskHandle, Timer, Transport,
 };
 use ulo_transport::{CallError, ErrorKind, TaskSet, Tracked, span};
+use ulo_transport::__private::Watch;
 
 use crate::__private::HandlerFn;
 use crate::broadcast::NodeId;
@@ -48,7 +49,6 @@ use crate::gateway::{
 use crate::rooms::{BroadcastError, Hub};
 use crate::session::SessionHandle;
 use crate::transport::{ConnectCx, ConnectInner, ConnectReply, ConnectionInfo, CxInner, NoHandler, Reply, UpgradeHead, Ws, WsConnect, WsCx};
-use crate::watch::Watch;
 
 /// A connection's id, unique across every process sharing a broadcast adapter: the process's
 /// [`NodeId`] and a counter. `Rooms::to_client(id)` addresses it, and `except([id])` leaves it out.
@@ -453,9 +453,11 @@ impl Refusal {
 
 /// An upgrade request the handshake accepted, with what the connection needs once upgraded.
 ///
-/// Dropped without [`serve`](Self::serve), as when writing the 101 fails, a connection the
-/// connection phase admitted under `refuse = handshake` leaves the rooms; `on_disconnect` does
-/// not run, the connection never having opened.
+/// Under `refuse = handshake` the connection phase has run, `OnConnect` included, by the time a
+/// `Switch` exists. Dropped without [`serve`](Self::serve), as when writing the 101 fails, the
+/// connection it admitted gets `on_disconnect` with `DisconnectReason::Lost` and then leaves the
+/// rooms, on a task the table's drain and close reach. Under `refuse = close` nothing has run, and
+/// a dropped `Switch` runs nothing.
 pub struct Switch {
     accept: Accept,
     head: Arc<Parts>,
@@ -484,7 +486,8 @@ impl Switch {
     ///
     /// `upgraded` may resolve only once the 101 has been written, as hyper's upgrade does; a
     /// server holding the stream already passes `async move { Ok(io) }`. An `Err` ends the
-    /// connection before it opens, logged at `debug`.
+    /// connection before it opens, logged at `debug`; a connection the handshake's connection
+    /// phase admitted then gets `on_disconnect` with `DisconnectReason::Lost`.
     pub fn serve<Io, U>(mut self, upgraded: U)
     where
         U: Future<Output = Result<Io, BoxError>> + Send + 'static,
@@ -502,13 +505,21 @@ impl Switch {
 impl Drop for Switch {
     fn drop(&mut self) {
         if let Some(admitted) = self.admitted.take() {
-            self.accept.hub.unregister(admitted.conn.id());
+            let accept = self.accept.clone();
+            self.accept.tracker.spawn(&*self.accept.runtime, async move {
+                admitted.end(&accept, DisconnectReason::Lost).await;
+            });
         }
     }
 }
 
 /// Decides one upgrade request on `accept`'s gateway: the RFC 6455 handshake checks, the
 /// subprotocol negotiation, and the connection phase before the 101 under `refuse = handshake`.
+///
+/// The connection phase runs as a task the table's drain and close reach, and the decision waits
+/// for its answer. A server that drops the decision while `OnConnect` runs, as hyper drops a
+/// request whose client has gone, leaves the phase to finish; the `Switch` nobody receives then
+/// ends the connection it admitted through its `Drop`.
 pub(crate) async fn handshake(accept: Accept, head: Parts, peer: Option<SocketAddr>) -> Handshake {
     let checked = match check_handshake(&head, accept.gateway.settings()) {
         Ok(checked) => checked,
@@ -519,20 +530,41 @@ pub(crate) async fn handshake(accept: Accept, head: Parts, peer: Option<SocketAd
     }
     let head = Arc::new(head);
     let protocol: Option<Arc<str>> = checked.protocol.as_deref().map(Arc::from);
-    let admitted = match accept.gateway.settings().refuse {
-        Refuse::Close => None,
-        Refuse::Handshake => match connect(&accept, Arc::clone(&head), peer, protocol.clone()).await {
-            Connected::Admitted(admitted) => Some(admitted),
-            Connected::Refused(refused) => {
-                let mut headers = Vec::new();
-                if refused.status() == StatusCode::UNAUTHORIZED {
-                    headers.push((WWW_AUTHENTICATE, HeaderValue::from_static("Bearer")));
-                }
-                return Handshake::Refuse(Refusal { status: refused.status(), reason: refused.reason().to_owned(), headers });
+    match accept.gateway.settings().refuse {
+        Refuse::Close => Handshake::Switch(Switch { accept, head, peer, protocol, headers: checked.headers, admitted: None }),
+        Refuse::Handshake => {
+            let (answer, answered) = oneshot::channel();
+            let (tracker, runtime) = (Arc::clone(&accept.tracker), Arc::clone(&accept.runtime));
+            tracker.spawn(&*runtime, async move {
+                let decided = connection_phase(accept, head, peer, protocol, checked.headers).await;
+                // An answer nobody receives is dropped here, or with the channel.
+                let _ = answer.send(decided);
+            });
+            // Cancelled only when the table's close aborts the phase.
+            answered.await.unwrap_or_else(|_| Handshake::Refuse(Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "the server is shutting down")))
+        }
+    }
+}
+
+/// The connection phase before the 101: a `Switch` carrying the admitted connection, or the
+/// phase's refusal as a 401 or 403.
+async fn connection_phase(
+    accept: Accept,
+    head: Arc<Parts>,
+    peer: Option<SocketAddr>,
+    protocol: Option<Arc<str>>,
+    headers: Vec<(HeaderName, HeaderValue)>,
+) -> Handshake {
+    match connect(&accept, Arc::clone(&head), peer, protocol.clone()).await {
+        Connected::Admitted(admitted) => Handshake::Switch(Switch { accept, head, peer, protocol, headers, admitted: Some(admitted) }),
+        Connected::Refused(refused) => {
+            let mut headers = Vec::new();
+            if refused.status() == StatusCode::UNAUTHORIZED {
+                headers.push((WWW_AUTHENTICATE, HeaderValue::from_static("Bearer")));
             }
-        },
-    };
-    Handshake::Switch(Switch { accept, head, peer, protocol, headers: checked.headers, admitted })
+            Handshake::Refuse(Refusal { status: refused.status(), reason: refused.reason().to_owned(), headers })
+        }
+    }
 }
 
 /// The connection after its 101: the slot under `max_connections`, the connection phase unless
@@ -553,7 +585,7 @@ async fn run<Io, U>(
         Err(error) => {
             tracing::debug!(%error, peer = ?peer, "a WebSocket upgrade did not complete");
             if let Some(admitted) = admitted {
-                accept.hub.unregister(admitted.conn.id());
+                admitted.end(&accept, DisconnectReason::Lost).await;
             }
             return;
         }
@@ -564,10 +596,10 @@ async fn run<Io, U>(
         .max_frame_size(Some(limits.frame_limit));
     let mut ws = WebSocketStream::from_raw_socket(io, Role::Server, Some(config)).await;
     let Some(slot) = Slot::acquire(&accept.gateway) else {
-        if let Some(admitted) = admitted {
-            accept.hub.unregister(admitted.conn.id());
-        }
         refuse(&mut ws, &accept, 1013, "too many connections").await;
+        if let Some(admitted) = admitted {
+            admitted.end(&accept, DisconnectReason::ServerClose { code: 1013 }).await;
+        }
         return;
     };
     let admitted = match admitted {
@@ -581,8 +613,7 @@ async fn run<Io, U>(
         },
     };
     let why = serve(ws, &admitted, &accept).await;
-    disconnect(&admitted.conn, why, &accept).await;
-    accept.hub.unregister(admitted.conn.id());
+    admitted.end(&accept, why).await;
     drop(slot);
 }
 
@@ -676,6 +707,15 @@ fn has_token(headers: &HeaderMap, name: &HeaderName, token: &str) -> bool {
 struct Admitted {
     conn: Connection,
     instance: Option<Instance>,
+}
+
+impl Admitted {
+    /// `on_disconnect` with `why`, then out of the rooms: how every admitted connection ends,
+    /// served or not, so a connection that ran `OnConnect` always gets `on_disconnect`.
+    async fn end(self, accept: &Accept, why: DisconnectReason) {
+        disconnect(&self.conn, why, accept).await;
+        accept.hub.unregister(self.conn.id());
+    }
 }
 
 enum Connected {

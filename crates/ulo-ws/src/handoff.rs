@@ -1,6 +1,11 @@
 //! The gateway hand-off on the HTTP server's port and on an embedding host declaring `upgrades`
 //! (transports DESIGN §3.5, X21): the `ulo_http::UpgradeHandler` `WsModule` registers, which finds
 //! its gateways through `AppHandle::mounted::<Ws>()` and `::<WsConnect>()` (X20).
+//!
+//! On the HTTP port, the HTTP server's drain and load shedding answer first. A gateway there is
+//! the HTTP server's guest: an upgrade request arriving once the drain has begun, or over the
+//! server's `max_inflight`, is answered with the HTTP server's own 503 before the hand-off sees
+//! it, so the table's plain-text 503 for a handshake during the drain is a standalone server's.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex, PoisonError};
