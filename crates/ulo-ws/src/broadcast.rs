@@ -25,9 +25,11 @@ use crate::connection::ConnId;
 /// as `dyn BroadcastAdapter`.
 pub trait BroadcastAdapter: Send + Sync + 'static {
     /// What the adapter refuses before any I/O: on an adapter tied to a tokio runtime, being built
-    /// outside one and given none. A server serving gateways calls it from its own `prepare`, the
-    /// hand-off on the HTTP server's port and a standalone server alike, so the refusal fails
-    /// `listen()` beside the server's own. Unset, it refuses nothing, as the in-memory adapter.
+    /// outside one and given none. `WsModule`'s init hook calls it, so the refusal fails `connect`
+    /// in a process that serves no gateway too, and a server serving gateways calls it again from
+    /// its own `prepare`, the hand-off on the HTTP server's port and a standalone server alike, a
+    /// check that refuses nothing it did not refuse at `connect`. Unset, it refuses nothing, as the
+    /// in-memory adapter.
     fn prepare(&self) -> Result<(), BoxError> {
         Ok(())
     }

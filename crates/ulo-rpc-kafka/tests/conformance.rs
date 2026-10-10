@@ -135,7 +135,9 @@ impl Broker for KraftBroker {
     }
 }
 
-ulo_rpc_conformance::conformance_suite!(KraftBroker);
+ulo_rpc_conformance::conformance_suite!(KraftBroker; not_applicable {
+    cancel_follows_its_request: "U17: the link carries a request and its `cancel` on separate lanes, and the broker may deliver the `cancel` first",
+});
 
 /// An app with nothing in it, whose handle the server's link is prepared with.
 struct Empty;

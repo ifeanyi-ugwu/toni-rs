@@ -1,9 +1,12 @@
 //! The embedding conformance suite against a salvo host, nested under `PREFIX` with
 //! `api/{**rest}` and as the catch-all `{**rest}`.
 
+use std::io::Result as IoResult;
 use std::time::Duration;
 
-use salvo::conn::tcp::TcpAcceptor;
+use salvo::conn::tcp::{TcpAcceptor, TcpCoupler};
+use salvo::conn::{Accepted, Acceptor, Holding};
+use salvo::fuse::ArcFuseFactory;
 use salvo::http::HeaderValue;
 use salvo::{Depot, FlowCtrl, Request, Response, Router};
 use tokio::sync::oneshot;
@@ -12,13 +15,39 @@ use ulo::app::Connected;
 use ulo::{App, Signal};
 use ulo_http::Routing;
 use ulo_http::embed::{Embed, EmbedLimits};
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, startup_failed, routing_label};
+use ulo_http_conformance::{
+    Counted, HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, ReadCount, report, routing_label, startup_failed,
+};
 use ulo_http_salvo::{Closing, Embedded, Salvo, handler};
 
 struct SalvoHost {
     base_url: String,
+    read_count: ReadCount,
     stop: oneshot::Sender<()>,
     serving: JoinHandle<()>,
+}
+
+/// salvo's acceptor, each connection it accepts counted at its first read.
+struct Counting {
+    tcp: TcpAcceptor,
+    read_count: ReadCount,
+}
+
+type TcpStream = <TcpAcceptor as Acceptor>::Stream;
+
+impl Acceptor for Counting {
+    type Coupler = TcpCoupler<Counted<TcpStream>>;
+    type Stream = Counted<TcpStream>;
+
+    fn holdings(&self) -> &[Holding] {
+        self.tcp.holdings()
+    }
+
+    async fn accept(&mut self, fuse_factory: Option<ArcFuseFactory>) -> IoResult<Accepted<Self::Coupler, Self::Stream>> {
+        let Accepted { stream, fusewire, local_addr, remote_addr, http_scheme, .. } = self.tcp.accept(fuse_factory).await?;
+        let stream = self.read_count.wrap(stream);
+        Ok(Accepted { coupler: TcpCoupler::new(), stream, fusewire, local_addr, remote_addr, http_scheme })
+    }
 }
 
 /// The host's hoop, around the app's handler: the header's value into the request's extensions,
@@ -57,6 +86,8 @@ impl Host for SalvoHost {
         let addr = listener.local_addr().unwrap_or_else(|error| startup_failed!("the host's listener has no address: {}", report(&error)));
         let acceptor = TcpAcceptor::try_from(listener)
             .unwrap_or_else(|error| startup_failed!("salvo did not adopt the listener: {}", report(&error)));
+        let read_count = ReadCount::default();
+        let acceptor = Counting { tcp: acceptor, read_count: read_count.clone() };
         let server = salvo::Server::new(Closing::new(&embedded, acceptor));
         let service = salvo::Service::new(router);
         let (stop, stopped) = oneshot::channel::<()>();
@@ -67,7 +98,7 @@ impl Host for SalvoHost {
             };
             let _ = ulo_http_salvo::run(app, &embedded, server, service, signal).await;
         });
-        SalvoHost { base_url: format!("http://{addr}"), stop, serving }
+        SalvoHost { base_url: format!("http://{addr}"), read_count, stop, serving }
     }
 
     fn base_url(&self) -> String {
@@ -76,6 +107,10 @@ impl Host for SalvoHost {
 
     fn limits() -> EmbedLimits {
         <Salvo as Embed>::limits()
+    }
+
+    fn connections_read(&self) -> Option<usize> {
+        Some(self.read_count.get())
     }
 
     async fn stop(self) {

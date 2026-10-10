@@ -60,4 +60,6 @@ impl Broker for RabbitMqBroker {
     }
 }
 
-ulo_rpc_conformance::conformance_suite!(RabbitMqBroker);
+ulo_rpc_conformance::conformance_suite!(RabbitMqBroker; not_applicable {
+    cancel_follows_its_request: "U17: the link carries a request and its `cancel` on separate lanes, and the broker may deliver the `cancel` first",
+});

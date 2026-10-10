@@ -1,15 +1,15 @@
 //! An adapter built on a thread with no tokio runtime current, and given none with `with_handle`,
-//! fails its `prepare` naming `.with_handle(..)`, so a standalone server serving gateways over it
-//! refuses to `listen()` before any I/O; one given a handle prepares.
+//! fails its `prepare` naming `.with_handle(..)`, so an app importing `WsModule` over it fails
+//! `connect` before any I/O, a gateway served or not; one given a handle prepares.
 
 use std::sync::Mutex;
 use std::thread;
 
-use ulo::{App, Module, ModuleDef, ModuleIdentity, Signal, StartupError, injectable, routes};
+use ulo::{App, ConnectError, FailureReason, Module, ModuleDef, ModuleIdentity, StartupError};
 use ulo_ws::{BroadcastAdapter, WsModule};
 use ulo_ws_redis::Redis;
 
-/// Nothing listens here; `prepare` and `listen()` refuse before any connection is tried.
+/// Nothing listens here; `prepare` and `connect` refuse before any connection is tried.
 const URL: &str = "redis://127.0.0.1:6379";
 
 #[test]
@@ -22,19 +22,7 @@ fn an_adapter_built_outside_a_runtime_and_given_none_refuses_in_prepare() {
     Redis::url(URL).with_handle(runtime.handle().clone()).prepare().expect("an adapter given a handle prepares");
 }
 
-#[injectable]
-struct Lone;
-
-#[routes]
-#[ulo_ws::gateway(path = "/lone", port = own)]
-impl Lone {
-    #[ulo_ws::message("ping")]
-    fn ping(&self) -> &'static str {
-        "pong"
-    }
-}
-
-/// `WsModule` over the adapter it is given, and one gateway for the standalone server.
+/// `WsModule` over the adapter it is given, serving no gateway: a process that only broadcasts.
 struct Root(Mutex<Option<Redis>>);
 
 impl Module for Root {
@@ -46,31 +34,18 @@ impl Module for Root {
         if let Some(adapter) = self.0.lock().expect("the root's lock is not poisoned").take() {
             m.import(WsModule::for_root().broadcast(adapter));
         }
-        m.controller::<Lone>();
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_standalone_server_over_an_adapter_with_no_runtime_is_refused_at_listen() {
+async fn a_process_broadcasting_over_an_adapter_with_no_runtime_fails_connect() {
     let adapter = thread::spawn(|| Redis::url(URL)).join().expect("building the adapter on a plain thread panicked");
-    let bound = App::builder(Root(Mutex::new(Some(adapter))))
-        .runtime(ulo_tokio::Tokio::current())
-        .wire()
-        .expect("the app wires")
-        .connect()
-        .await
-        .expect("the app connects")
-        .bind(ulo_ws_hyper::Server::new("127.0.0.1:0"))
-        .listen()
-        .await;
-    match bound {
-        Err(StartupError::Configure(refused)) => {
-            assert!(refused.to_string().contains("`.with_handle(..)`"), "the refusal names `.with_handle(..)`: {refused}");
+    let wired = App::builder(Root(Mutex::new(Some(adapter)))).runtime(ulo_tokio::Tokio::current()).wire().expect("the app wires");
+    match wired.connect().await {
+        Err(StartupError::Connect(ConnectError::Hook { reason: FailureReason::Errored(error), .. })) => {
+            assert!(error.to_string().contains("`.with_handle(..)`"), "the refusal names `.with_handle(..)`: {error}");
         }
-        Err(other) => panic!("expected a `Configure` refusal, got: {other}"),
-        Ok(app) => {
-            let _ = app.handle().close(Signal::new("handle")).await;
-            panic!("a server over a broadcast adapter with no tokio runtime listened");
-        }
+        Err(other) => panic!("expected `WsModule`'s init hook to fail `connect`, got: {other}"),
+        Ok(_) => panic!("an app connected over a broadcast adapter with no tokio runtime"),
     }
 }

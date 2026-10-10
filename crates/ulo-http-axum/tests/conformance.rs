@@ -1,13 +1,16 @@
 //! The embedding conformance suite against an axum host, nested under `PREFIX` with
 //! `nest_service` and as the router's `fallback_service`.
 
+use std::io;
 use std::net::SocketAddr;
 
 use axum::Router;
 use axum::extract::Request;
 use axum::middleware::{self, Next};
+use axum::serve::{Listener, ListenerExt};
 use axum::response::Response;
 use http::HeaderValue;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tower::Layer;
@@ -16,12 +19,35 @@ use ulo::{App, Signal};
 use ulo_http::Routing;
 use ulo_http::embed::{Embed, EmbedLimits};
 use ulo_http_axum::{Axum, Embedded, HostLayer};
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, startup_failed, routing_label};
+use ulo_http_conformance::{
+    Counted, HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, ReadCount, report, routing_label, startup_failed,
+};
 
 struct AxumHost {
     base_url: String,
+    read_count: ReadCount,
     stop: oneshot::Sender<()>,
     serving: JoinHandle<()>,
+}
+
+/// The host's listener, each connection it accepts counted at its first read.
+struct Counting {
+    tcp: TcpListener,
+    read_count: ReadCount,
+}
+
+impl Listener for Counting {
+    type Io = Counted<TcpStream>;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (stream, addr) = Listener::accept(&mut self.tcp).await;
+        (self.read_count.wrap(stream), addr)
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        Listener::local_addr(&self.tcp)
+    }
 }
 
 /// The host's middleware, around everything the router serves: the header's value into the
@@ -56,6 +82,10 @@ impl Host for AxumHost {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
             .unwrap_or_else(|error| startup_failed!("the host did not bind a port: {}", report(&error)));
         let addr = listener.local_addr().unwrap_or_else(|error| startup_failed!("the host's listener has no address: {}", report(&error)));
+        let read_count = ReadCount::default();
+        // axum gives `ConnectInfo<SocketAddr>` for a `TcpListener` and for a listener under
+        // `tap_io`, so the counting listener goes under a `tap_io` that does nothing.
+        let listener = Counting { tcp: listener, read_count: read_count.clone() }.tap_io(|_| {});
         let serve = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>());
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {
@@ -65,7 +95,7 @@ impl Host for AxumHost {
             };
             let _ = ulo_http_axum::run(app, &embedded, serve, signal).await;
         });
-        AxumHost { base_url: format!("http://{addr}"), stop, serving }
+        AxumHost { base_url: format!("http://{addr}"), read_count, stop, serving }
     }
 
     fn base_url(&self) -> String {
@@ -74,6 +104,10 @@ impl Host for AxumHost {
 
     fn limits() -> EmbedLimits {
         <Axum as Embed>::limits()
+    }
+
+    fn connections_read(&self) -> Option<usize> {
+        Some(self.read_count.get())
     }
 
     async fn stop(self) {

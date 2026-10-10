@@ -19,11 +19,12 @@
 //! [`Serve::drain`] stops accepting, drops the listeners and resolves every connection's
 //! `draining`, then waits for the connection tasks; [`Serve::close`] aborts whatever is left. A
 //! failed or timed-out handshake is logged at `debug` with the peer and the connection dropped;
-//! the accept loop is unaffected.
+//! the accept loop is unaffected. [`ReadCount`], handed in through [`ServeConfig::read_count`],
+//! counts the connections the server has read from.
 
 mod handshake;
 mod listener;
 mod serve;
 
-pub use listener::Io;
+pub use listener::{Io, ReadCount};
 pub use serve::{Accepted, Draining, Serve, ServeConfig};

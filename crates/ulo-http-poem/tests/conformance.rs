@@ -1,7 +1,11 @@
 //! The embedding conformance suite against a poem host, nested under `PREFIX` with `Route::nest`
 //! and as the fallback, nested at `/`, which strips nothing.
 
-use poem::listener::TcpAcceptor;
+use std::io::Result as IoResult;
+
+use poem::http::uri::Scheme;
+use poem::listener::{Acceptor, TcpAcceptor};
+use poem::web::{LocalAddr, RemoteAddr};
 use poem::{Endpoint, EndpointExt, IntoResponse, Route};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -9,13 +13,35 @@ use ulo::app::Connected;
 use ulo::{App, Signal};
 use ulo_http::Routing;
 use ulo_http::embed::{Embed, EmbedLimits};
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, startup_failed, routing_label};
+use ulo_http_conformance::{
+    Counted, HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, ReadCount, report, routing_label, startup_failed,
+};
 use ulo_http_poem::{Embedded, Poem, endpoint};
 
 struct PoemHost {
     base_url: String,
+    read_count: ReadCount,
     stop: oneshot::Sender<()>,
     serving: JoinHandle<()>,
+}
+
+/// poem's acceptor, each connection it accepts counted at its first read.
+struct Counting {
+    tcp: TcpAcceptor,
+    read_count: ReadCount,
+}
+
+impl Acceptor for Counting {
+    type Io = Counted<<TcpAcceptor as Acceptor>::Io>;
+
+    fn local_addr(&self) -> Vec<LocalAddr> {
+        self.tcp.local_addr()
+    }
+
+    async fn accept(&mut self) -> IoResult<(Self::Io, LocalAddr, RemoteAddr, Scheme)> {
+        let (stream, local, remote, scheme) = self.tcp.accept().await?;
+        Ok((self.read_count.wrap(stream), local, remote, scheme))
+    }
 }
 
 /// The host's middleware, around the route: the header's value into the request's extensions,
@@ -51,7 +77,8 @@ impl Host for PoemHost {
         listener.set_nonblocking(true).unwrap_or_else(|error| startup_failed!("the listener did not turn non-blocking: {}", report(&error)));
         let acceptor = TcpAcceptor::from_std(listener)
             .unwrap_or_else(|error| startup_failed!("poem did not adopt the listener: {}", report(&error)));
-        let host = poem::Server::new_with_acceptor(acceptor);
+        let read_count = ReadCount::default();
+        let host = poem::Server::new_with_acceptor(Counting { tcp: acceptor, read_count: read_count.clone() });
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {
             let signal = async move {
@@ -60,7 +87,7 @@ impl Host for PoemHost {
             };
             let _ = ulo_http_poem::run(app, &embedded, host, route, signal).await;
         });
-        PoemHost { base_url: format!("http://{addr}"), stop, serving }
+        PoemHost { base_url: format!("http://{addr}"), read_count, stop, serving }
     }
 
     fn base_url(&self) -> String {
@@ -69,6 +96,10 @@ impl Host for PoemHost {
 
     fn limits() -> EmbedLimits {
         <Poem as Embed>::limits()
+    }
+
+    fn connections_read(&self) -> Option<usize> {
+        Some(self.read_count.get())
     }
 
     async fn stop(self) {

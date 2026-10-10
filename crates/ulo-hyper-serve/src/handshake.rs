@@ -32,7 +32,7 @@ pub(crate) async fn handshake(
             if let Some(name) = conn.server_name() {
                 info = info.server_name(name);
             }
-            Some((Io(Inner::Tls(Box::new(stream))), info))
+            Some((Io::new(Inner::Tls(Box::new(stream))), info))
         }
         Ok(Err(error)) => {
             tracing::debug!(%peer, %error, "TLS handshake failed");

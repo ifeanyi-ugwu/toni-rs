@@ -10,8 +10,8 @@ pub enum Count {
 }
 
 impl Count {
-    /// What `Count::Default` means for every transport's `max_inflight`: HTTP's, RPC's, gRPC's and
-    /// a WebSocket gateway's.
+    /// What `Count::Default` means for every transport's server-wide `max_inflight`: HTTP's,
+    /// RPC's, gRPC's, and a WebSocket server's `server_max_inflight` across its connections.
     pub const DEFAULT_MAX_INFLIGHT: u32 = 1024;
 
     /// This count read as a `max_inflight`: [`DEFAULT_MAX_INFLIGHT`](Self::DEFAULT_MAX_INFLIGHT)

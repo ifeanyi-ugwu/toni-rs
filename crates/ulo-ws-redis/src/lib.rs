@@ -20,9 +20,9 @@
 //! The adapter's connections and its subscription task live on the tokio runtime it holds, the one
 //! current where it was built or the one [`Redis::with_handle`] names, so `publish` and the
 //! subscription's stream may be polled on any executor. An adapter built outside a runtime and
-//! given none fails its `prepare`, naming `.with_handle(..)`, so a server serving gateways refuses
-//! to `listen()`. A process that broadcasts and serves no gateway prepares no adapter; there each
-//! publish fails with the same refusal.
+//! given none fails its `prepare`, naming `.with_handle(..)`, which `WsModule`'s init hook calls,
+//! so the app fails `connect` whether or not it serves a gateway. A publish reaching such an
+//! adapter anyway fails with the same refusal.
 
 use std::sync::Arc;
 use std::time::Duration;

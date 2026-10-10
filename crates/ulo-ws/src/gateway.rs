@@ -594,6 +594,9 @@ const DEFAULT_MESSAGE_LIMIT: u64 = 64 * 1024 * 1024;
 /// tungstenite's frame ceiling, lowered to the message limit when that is smaller.
 const FRAME_LIMIT: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_OUTBOUND: usize = 1024;
+/// A connection's own bound on its messages in flight, against one chatty client; the server's
+/// bound across its connections is `Count::DEFAULT_MAX_INFLIGHT`.
+const DEFAULT_CONNECTION_INFLIGHT: usize = 64;
 const DEFAULT_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// A gateway's limits with the server's or the module's defaults applied.
@@ -620,7 +623,7 @@ impl Limits {
             message_limit: usize::try_from(message_limit).unwrap_or(usize::MAX),
             frame_limit: usize::try_from(message_limit.min(FRAME_LIMIT)).unwrap_or(usize::MAX),
             max_connections: count(settings.max_connections, defaults.max_connections, None),
-            max_inflight: count(settings.max_inflight, defaults.max_inflight, Count::Default.max_inflight()).unwrap_or(usize::MAX),
+            max_inflight: count(settings.max_inflight, defaults.max_inflight, Some(DEFAULT_CONNECTION_INFLIGHT)).unwrap_or(usize::MAX),
             max_outbound: count(settings.max_outbound, defaults.max_outbound, Some(DEFAULT_MAX_OUTBOUND)),
             ping_interval: bound(settings.ping_interval, defaults.ping_interval),
             pong_timeout: bound(settings.pong_timeout, defaults.pong_timeout),
@@ -772,6 +775,15 @@ pub(crate) fn check_defaults(owner: &str, defaults: &GatewayDefaults, failures: 
     };
     for text in zero_settings(&settings) {
         failures.push(format!("{owner}: {text}"));
+    }
+    let none = HashSet::new();
+    let names = Names::new(&none);
+    if let Some(failure) = zero_count(
+        "server_max_inflight",
+        defaults.server_max_inflight,
+        "stop reading every connection before its first message",
+    ) {
+        failures.push(format!("{owner}: {}", failure.text(&names)));
     }
 }
 

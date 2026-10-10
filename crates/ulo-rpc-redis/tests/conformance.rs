@@ -2,9 +2,8 @@
 //! container of its own, since Pub/Sub channels span every database of a server. The client
 //! reaches it through a relay that `disrupt` cuts.
 //!
-//! Beside the suite, two tests drive the link through `Link` directly, for orderings no scenario
-//! reaches on its own: a request read after the drain ended the inbound stream, and a `cancel`
-//! reaching the server after its request, one publisher and one Pub/Sub connection carrying both.
+//! Beside the suite, a test drives the link through `Link` directly, for an ordering no scenario
+//! reaches on its own: a request read after the drain ended the inbound stream.
 
 #![cfg(feature = "integration")]
 
@@ -69,11 +68,6 @@ impl Broker for RedisServer {
 }
 
 ulo_rpc_conformance::conformance_suite!(RedisServer);
-
-#[tokio::test(flavor = "multi_thread")]
-async fn cancel_follows_its_request() {
-    ulo_rpc_conformance::cases::order::cancel_follows_its_request::<RedisServer>().await;
-}
 
 /// How long the test waits for a frame either side of the link should see.
 const PATIENCE: Duration = Duration::from_secs(5);

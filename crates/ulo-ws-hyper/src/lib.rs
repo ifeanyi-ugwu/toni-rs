@@ -24,6 +24,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, Transport};
 use ulo_http::Upgraded;
 use ulo_hyper_serve::{Accepted, Serve, ServeConfig};
+pub use ulo_hyper_serve::ReadCount;
 use ulo_net::rustls::ServerConfig;
 use ulo_net::{Activation, ActivationError, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::Count;
@@ -54,6 +55,7 @@ pub struct Server {
     header_timeout: Bound,
     handshake_timeout: Bound,
     defaults: GatewayDefaults,
+    read_count: ReadCount,
     prepared: Option<Prepared>,
     running: Option<Running>,
     bound: Vec<BoundAddr>,
@@ -82,10 +84,18 @@ impl Server {
             header_timeout: Bound::Default,
             handshake_timeout: Bound::Default,
             defaults: GatewayDefaults::default(),
+            read_count: ReadCount::default(),
             prepared: None,
             running: None,
             bound: Vec::new(),
         }
+    }
+
+    /// How many connections the server has read from, through a clone taken before the server
+    /// moves into the app: each counted at its first read, after its TLS handshake on a `wss`
+    /// endpoint.
+    pub fn read_count(&self) -> ReadCount {
+        self.read_count.clone()
     }
 
     /// One more endpoint the same server listens on.
@@ -125,10 +135,19 @@ impl Server {
         self
     }
 
-    /// Messages in flight per connection, over which the connection stops reading: 1,024 at
-    /// `Count::Default` (`Count::DEFAULT_MAX_INFLIGHT`), none at `Count::Unlimited`.
+    /// Messages in flight per connection, over which the connection stops reading: 64 at
+    /// `Count::Default`, none at `Count::Unlimited`.
     pub fn max_inflight(mut self, messages: Count) -> Self {
         self.defaults = self.defaults.max_inflight(messages);
+        self
+    }
+
+    /// Messages in flight across every connection of this server, over which every connection
+    /// stops reading until a place frees: 1,024 at `Count::Default` (`Count::DEFAULT_MAX_INFLIGHT`),
+    /// none at `Count::Unlimited`. As
+    /// [`GatewayDefaults::server_max_inflight`](ulo_ws::GatewayDefaults::server_max_inflight).
+    pub fn server_max_inflight(mut self, messages: Count) -> Self {
+        self.defaults = self.defaults.server_max_inflight(messages);
         self
     }
 
@@ -245,7 +264,7 @@ impl ulo::Server for Server {
         let listeners = ulo_net::bind_all(&endpoints)?;
         let addrs: Vec<SocketAddr> = listeners.iter().map(ulo_net::BoundListener::local_addr).collect();
         let secure = tls.is_some();
-        let config = ServeConfig { handshake_timeout: connection_timeout(self.handshake_timeout) };
+        let config = ServeConfig { handshake_timeout: connection_timeout(self.handshake_timeout), read_count: self.read_count.clone() };
         let serve = Serve::new(listeners, tls, &config)?;
         self.bound = addrs.into_iter().map(|addr| BoundAddr::new(<Ws as Transport>::KEY, addr).tls(secure)).collect();
         table.start();

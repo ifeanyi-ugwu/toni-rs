@@ -27,6 +27,10 @@ use crate::table::GatewayDefaults;
 /// a gateway on the HTTP server's port is reachable by nothing and `Dep<Rooms>` is a missing
 /// dependency at `wire()`.
 ///
+/// The module's init hook calls the broadcast adapter's `prepare`, so an adapter that cannot run,
+/// one with no runtime among them, fails `connect` whether or not a gateway is served; each
+/// server serving gateways calls it again in its own `prepare`.
+///
 /// On the HTTP port, the HTTP server's drain and load shedding answer first: an upgrade request
 /// arriving once the drain has begun, or over the HTTP server's `max_inflight`, gets the HTTP
 /// server's 503 before the hand-off sees it.
@@ -62,10 +66,19 @@ impl WsModule {
         self
     }
 
-    /// Messages in flight per connection, over which the connection stops reading: 1,024 at
-    /// `Count::Default` (`Count::DEFAULT_MAX_INFLIGHT`), none at `Count::Unlimited`.
+    /// Messages in flight per connection, over which the connection stops reading: 64 at
+    /// `Count::Default`, none at `Count::Unlimited`.
     pub fn max_inflight(mut self, messages: Count) -> Self {
         self.defaults.max_inflight = messages;
+        self
+    }
+
+    /// Messages in flight across every connection on the HTTP server's port, over which every
+    /// connection stops reading until a place frees: 1,024 at `Count::Default`
+    /// (`Count::DEFAULT_MAX_INFLIGHT`), none at `Count::Unlimited`. As
+    /// [`GatewayDefaults::server_max_inflight`](crate::GatewayDefaults::server_max_inflight).
+    pub fn server_max_inflight(mut self, messages: Count) -> Self {
+        self.defaults.server_max_inflight = messages;
         self
     }
 
@@ -106,6 +119,11 @@ impl Module for WsModule {
         m.export::<Rooms>();
         m.value(SharedAdapter(Arc::clone(&self.adapter))).also_as::<dyn BroadcastAdapter>(|adapter| adapter);
         m.export::<dyn BroadcastAdapter>();
+        let adapter = Arc::clone(&self.adapter);
+        m.on_init(move || {
+            let prepared = adapter.prepare();
+            async move { prepared }
+        });
     }
 }
 
@@ -121,6 +139,10 @@ impl Meta for HubMeta {}
 struct SharedAdapter(Arc<dyn BroadcastAdapter>);
 
 impl BroadcastAdapter for SharedAdapter {
+    fn prepare(&self) -> Result<(), BoxError> {
+        self.0.prepare()
+    }
+
     fn publish(&self, target: Target, frame: Bytes) -> BoxFuture<'static, Result<(), BoxError>> {
         self.0.publish(target, frame)
     }

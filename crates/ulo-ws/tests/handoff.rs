@@ -1,13 +1,15 @@
 //! Gateways on the HTTP server's own port, reached through the upgrade hand-off `WsModule`
 //! registers and served by `ulo_http::Server` over hyper: the hand-off beside an HTTP route,
 //! `WsModule`'s defaults, `AfterInit` run from the hand-off's `bound`, the drain's 1001, rooms
-//! and broadcast across connections, and a broadcast adapter refusing in its `prepare` failing the
-//! HTTP server's `listen()`.
+//! and broadcast across connections, a broadcast adapter refusing in its `prepare` failing the
+//! app's `connect`, and `WsModule`'s server-wide in-flight bound.
 
 mod support;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -15,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use bytes::Bytes;
 use futures_util::stream::BoxStream;
-use ulo::{App, BoxError, BoxFuture, Dep, Module, ModuleDef, ModuleIdentity, Signal, StartupError, injectable, routes};
+use ulo::{App, BoxError, BoxFuture, ConnectError, Dep, FailureReason, Module, ModuleDef, ModuleIdentity, StartupError, injectable, routes};
 use ulo_transport::Count;
 use ulo_ws::{
     AfterInit, BroadcastAdapter, ConnId, ConnectCx, ConnectRefused, GatewayRef, NodeId, OnConnect, Payload, Rooms, Target, WsCx, WsModule,
@@ -261,7 +263,7 @@ async fn the_drain_closes_a_same_port_connection_with_going_away() {
     let (app, _) = start().await;
     let mut socket = app.connect("/annex", &[]).await;
     let stopping = tokio::spawn(app.stop());
-    assert_eq!(close_frame(&mut socket).await, Some((1001, "server shutting down".to_owned())));
+    assert_eq!(close_frame(&mut socket).await, Some((1001, "the server is shutting down".to_owned())));
     hang_up(socket).await;
     within("the app's close after its last connection answered", stopping).await.unwrap_or_else(|error| panic!("{error}"));
 }
@@ -380,7 +382,7 @@ impl BroadcastAdapter for Refusing {
     }
 }
 
-/// `WsModule` over [`Refusing`], with one gateway on the HTTP port.
+/// `WsModule` over [`Refusing`], serving no gateway: a process that only broadcasts.
 struct RefusingRoot;
 
 impl Module for RefusingRoot {
@@ -390,30 +392,100 @@ impl Module for RefusingRoot {
 
     fn register(&self, m: &mut ModuleDef<'_>) {
         m.import(WsModule::for_root().broadcast(Refusing));
-        m.controller::<Annex>();
     }
 }
 
 #[tokio::test]
-async fn a_broadcast_adapter_refusing_in_prepare_fails_the_http_server_s_listen() {
-    let bound = App::builder(RefusingRoot)
-        .runtime(ulo_tokio::Tokio::current())
-        .wire()
-        .expect("the app wires")
-        .connect()
-        .await
-        .expect("the app connects")
-        .bind(ulo_http_hyper::Server::new("127.0.0.1:0"))
-        .listen()
-        .await;
-    match bound {
-        Err(StartupError::Configure(refused)) => {
-            assert!(refused.to_string().contains(REFUSAL), "the refusal does not carry the adapter's: {refused}");
+async fn a_broadcast_adapter_refusing_in_prepare_fails_connect() {
+    let wired = App::builder(RefusingRoot).runtime(ulo_tokio::Tokio::current()).wire().expect("the app wires");
+    match wired.connect().await {
+        Err(StartupError::Connect(ConnectError::Hook { reason: FailureReason::Errored(error), .. })) => {
+            assert!(error.to_string().contains(REFUSAL), "the hook's error does not carry the adapter's: {error}");
         }
-        Err(other) => panic!("expected a `Configure` refusal, got: {other}"),
-        Ok(app) => {
-            let _ = app.handle().close(Signal::new("handoff")).await;
-            panic!("an HTTP server listened with a broadcast adapter that refused in `prepare`");
-        }
+        Err(other) => panic!("expected `WsModule`'s init hook to fail `connect`, got: {other}"),
+        Ok(_) => panic!("an app connected with a broadcast adapter that refused in `prepare`"),
     }
+}
+
+/// Each `hold` counted as it starts and while it runs, then let through one at a time by the test.
+#[derive(Clone)]
+struct Held {
+    let_through: Arc<tokio::sync::Semaphore>,
+    started: Arc<AtomicUsize>,
+    running: Arc<AtomicUsize>,
+    most: Arc<AtomicUsize>,
+}
+
+/// One gateway on the HTTP port whose `hold` waits for the test.
+#[injectable]
+struct Holding {
+    held: Dep<Held>,
+}
+
+#[routes]
+#[ulo_ws::gateway(path = "/holding")]
+impl Holding {
+    #[ulo_ws::message("hold")]
+    async fn hold(&self) -> &'static str {
+        let held = &self.held;
+        held.started.fetch_add(1, Ordering::AcqRel);
+        held.most.fetch_max(held.running.fetch_add(1, Ordering::AcqRel) + 1, Ordering::AcqRel);
+        held.let_through.acquire().await.expect("the semaphore is never closed").forget();
+        held.running.fetch_sub(1, Ordering::AcqRel);
+        "released"
+    }
+}
+
+/// `WsModule` bounding the HTTP port's connections at one message in flight together.
+struct BoundedRoot {
+    held: Held,
+}
+
+impl Module for BoundedRoot {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<Self>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        m.import(WsModule::for_root().server_max_inflight(Count::Max(1)));
+        m.value(self.held.clone());
+        m.controller::<Holding>();
+    }
+}
+
+#[tokio::test]
+async fn ws_module_s_server_bound_holds_the_http_port_s_connections_together() {
+    let held = Held {
+        let_through: Arc::new(tokio::sync::Semaphore::new(0)),
+        started: Arc::default(),
+        running: Arc::default(),
+        most: Arc::default(),
+    };
+    let app = Running::start(BoundedRoot { held: held.clone() }, ulo_http_hyper::Server::new("127.0.0.1:0")).await;
+    let started = |n: usize| {
+        let held = held.clone();
+        async move {
+            within(&format!("{n} `hold` handlers starting"), async {
+                while held.started.load(Ordering::Acquire) < n {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await;
+        }
+    };
+    let mut first = app.connect("/holding", &[]).await;
+    let mut second = app.connect("/holding", &[]).await;
+    send_json(&mut first, &json!({ "event": "hold", "id": 1 })).await;
+    send_json(&mut second, &json!({ "event": "hold", "id": 2 })).await;
+    started(1).await;
+    held.let_through.add_permits(1);
+    started(2).await;
+    held.let_through.add_permits(1);
+    let mut answers = vec![next_json(&mut first).await, next_json(&mut second).await];
+    answers.sort_by_key(|answer| answer["id"].as_u64());
+    assert_eq!(answers, vec![json!({ "id": 1, "data": "released" }), json!({ "id": 2, "data": "released" })]);
+    assert_eq!(held.most.load(Ordering::Acquire), 1, "the most messages the HTTP port's connections had in flight at once");
+    hang_up(first).await;
+    hang_up(second).await;
+    app.stop().await;
 }

@@ -474,12 +474,17 @@ enum ClientCall {
     /// A streamed request: its `in`, `in_end` and `cancel` frames wait in `queue` until the server
     /// acknowledges the `open`, then go out in order.
     Streaming { pattern: Pattern, gate: Option<oneshot::Sender<()>>, queue: mpsc::UnboundedSender<Frame> },
+    /// A streamed request cancelled before the server acknowledged its `open`: its `cancel` waits
+    /// in the pump's queue and goes out alone once the acknowledgment opens `gate`, the frames
+    /// queued before it dropped. The entry stays until then, or until the link closes when no
+    /// acknowledgment comes.
+    Cancelled { pattern: Pattern, gate: oneshot::Sender<()> },
 }
 
 impl ClientCall {
     fn pattern(&self) -> &Pattern {
         match self {
-            ClientCall::Unary { pattern } | ClientCall::Streaming { pattern, .. } => pattern,
+            ClientCall::Unary { pattern } | ClientCall::Streaming { pattern, .. } | ClientCall::Cancelled { pattern, .. } => pattern,
         }
     }
 }
@@ -521,15 +526,29 @@ impl ClientSide {
                 Ok(())
             }
             Frame::Cancel { id } => {
-                let call = lock(&self.calls).remove(&id);
-                match call {
-                    Some(ClientCall::Unary { .. }) => publish_control(&self.client, self.reply_subject(id), CANCEL, Bytes::new()).await,
-                    Some(ClientCall::Streaming { queue, .. }) => {
-                        let _ = queue.send(Frame::Cancel { id });
-                        Ok(())
+                let unary = {
+                    let mut calls = lock(&self.calls);
+                    match calls.remove(&id) {
+                        Some(ClientCall::Unary { .. }) => true,
+                        // The server takes the `open` and holds the call, so the `cancel` follows
+                        // once it acknowledges it.
+                        Some(ClientCall::Streaming { pattern, gate: Some(gate), queue }) => {
+                            let _ = queue.send(Frame::Cancel { id });
+                            calls.insert(id, ClientCall::Cancelled { pattern, gate });
+                            false
+                        }
+                        Some(ClientCall::Streaming { gate: None, queue, .. }) => {
+                            let _ = queue.send(Frame::Cancel { id });
+                            false
+                        }
+                        Some(cancelled @ ClientCall::Cancelled { .. }) => {
+                            calls.insert(id, cancelled);
+                            false
+                        }
+                        None => false,
                     }
-                    None => Ok(()),
-                }
+                };
+                if unary { publish_control(&self.client, self.reply_subject(id), CANCEL, Bytes::new()).await } else { Ok(()) }
             }
             other => Err(format!("a client does not send a `{}` frame", other.kind()).into()),
         }
@@ -558,10 +577,19 @@ impl ClientSide {
     }
 
     fn open_gate(&self, id: u64) {
-        if let Some(ClientCall::Streaming { gate, .. }) = lock(&self.calls).get_mut(&id)
-            && let Some(gate) = gate.take()
-        {
-            let _ = gate.send(());
+        let mut calls = lock(&self.calls);
+        match calls.get_mut(&id) {
+            Some(ClientCall::Streaming { gate, .. }) => {
+                if let Some(gate) = gate.take() {
+                    let _ = gate.send(());
+                }
+            }
+            Some(ClientCall::Cancelled { .. }) => {
+                if let Some(ClientCall::Cancelled { gate, .. }) = calls.remove(&id) {
+                    let _ = gate.send(());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -622,7 +650,24 @@ async fn pump(client: Client, reply: String, opened: oneshot::Receiver<()>, mut 
     if opened.await.is_err() {
         return;
     }
-    while let Some(frame) = queued.recv().await {
+    // A `cancel` queued before the acknowledgment goes out alone: the call is over.
+    let mut held = Vec::new();
+    while let Ok(frame) = queued.try_recv() {
+        held.push(frame);
+    }
+    if let Some(at) = held.iter().position(|frame| matches!(frame, Frame::Cancel { .. })) {
+        held = vec![held.swap_remove(at)];
+        queued.close();
+    }
+    let mut held = held.into_iter();
+    loop {
+        let frame = match held.next() {
+            Some(frame) => frame,
+            None => match queued.recv().await {
+                Some(frame) => frame,
+                None => break,
+            },
+        };
         let (kind, body) = match frame {
             Frame::In { data, .. } => (IN, data.into_bytes()),
             Frame::InEnd { .. } => (IN_END, Bytes::new()),

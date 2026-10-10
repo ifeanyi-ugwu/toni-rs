@@ -81,7 +81,7 @@ impl UpgradeHandler for Handoff {
             failures.push_error(error);
         }
         let gateways = build_table(&connects, &messages, Port::Http, &self.defaults, &mut failures);
-        let table = GatewayTable::new(gateways, Arc::clone(&self.hub), app.clone(), runtime);
+        let table = GatewayTable::new(gateways, Arc::clone(&self.hub), app.clone(), runtime, &self.defaults);
         *self.table.lock().unwrap_or_else(PoisonError::into_inner) = Some(table);
         failures.into_result()
     }

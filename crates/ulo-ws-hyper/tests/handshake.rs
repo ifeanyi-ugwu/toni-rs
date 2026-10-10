@@ -227,11 +227,11 @@ async fn a_handshake_refusal_counts_against_no_connection_limit() {
     assert_eq!(next_json(&mut admitted).await, json!({ "id": 1, "data": "hello" }));
 
     // The one slot is taken. A refused upgrade is still refused by its guard, before any slot is
-    // asked for, where `refuse = close` would accept it and close it with 1013.
+    // asked for.
     let refused = upgrade(app.addr, "/strict", &[("x-user", "bob")]).await;
     assert_eq!(refused.status, 403, "body: {}", refused.body);
 
-    // An admitted one over the limit is accepted and closed with 1013.
+    // One the guards admit over the limit is accepted and closed with 1013, before `OnConnect`.
     let mut over = app.connect("/strict", &[("x-token", "open"), ("x-user", "bob")]).await;
     assert_eq!(close_frame(&mut over).await, Some((1013, "too many connections".to_owned())));
     hang_up(over).await;

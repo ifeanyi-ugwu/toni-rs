@@ -27,6 +27,7 @@ use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Data, Delivery, DeliveryMode, Frame, FrameTooLarge, Link, NoDestination,
     Ordering as Order, Outbound, Pattern, ReplyPath, ReplyTo,
 };
+use ulo_transport::__private::ordered;
 use ulo_transport::Count;
 
 /// The header naming a record's frame kind where the record alone does not tell it: `open` on a
@@ -59,7 +60,8 @@ const DELIVERY_TIMEOUT: &str = "30000";
 /// How long a record waits for room in librdkafka's queue before its produce fails.
 const QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Frames queued for one side's writer; a full queue makes the next send wait.
+/// Frames queued for one side's writer ahead of the next send's wait: each send is queued at its call and waits until it is
+/// among this many the writer has not taken.
 const WRITE_QUEUE: usize = 64;
 
 /// The Kafka link.
@@ -245,7 +247,7 @@ impl Link for Kafka {
 
         let (phase, _) = watch::channel(Phase::Serving);
         let (deliveries, inbound) = mpsc::unbounded_channel();
-        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        let (writes, queued) = ordered::channel(WRITE_QUEUE);
         runtime.handle().spawn(server_writer(producer, queued));
         let side = Arc::new(ServerSide {
             consumer,
@@ -297,7 +299,7 @@ impl Link for Kafka {
             closed: Mutex::new(Some(closed)),
             routing: Mutex::new(None),
         });
-        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        let (writes, queued) = ordered::channel(WRITE_QUEUE);
         runtime.handle().spawn(client_writer(Arc::clone(&side), queued));
         let (frames, replies_out) = mpsc::unbounded_channel();
         let routing = runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames, closing, writes.clone()));
@@ -305,11 +307,12 @@ impl Link for Kafka {
         lock(&self.state).client = Some(Arc::clone(&side));
 
         Ok(Outbound {
+            // Queued at the call, so frames go out in the order their sends were called.
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
-                let writes = writes.clone();
+                let (answer, answered) = oneshot::channel();
+                let room = writes.send(Job::Send { pattern, frame, answer });
                 Box::pin(async move {
-                    let (answer, answered) = oneshot::channel();
-                    writes.send(Job::Send { pattern, frame, answer }).await.map_err(|_| BoxError::from(CLOSED))?;
+                    room.await.map_err(|_| BoxError::from(CLOSED))?;
                     answered.await.map_err(|_| BoxError::from(CLOSED))?
                 })
             }),
@@ -599,7 +602,7 @@ async fn control_consumer(base: &ClientConfig, group: &str) -> Result<Arc<Detach
 struct ServerSide {
     consumer: Arc<Detached<StreamConsumer>>,
     /// The server's writer, which every reply and `opened` is produced through.
-    writes: mpsc::Sender<Record>,
+    writes: ordered::Sender<Record>,
     codec: Codec,
     /// The link's runtime, which the drain's watcher is spawned on.
     runtime: Tokio,
@@ -689,19 +692,13 @@ impl ServerSide {
         let codec = self.codec;
         let calls = Arc::clone(&self.calls);
         let released = key.clone();
+        // Queued at the call, so replies go out in the order their sends were called.
         let path = ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
-            let writes = writes.clone();
-            let calls = Arc::clone(&calls);
-            let reply = reply.clone();
-            let correlation = correlation.clone();
-            let released = released.clone();
-            Box::pin(async move {
-                if is_terminal(&frame) {
-                    calls.release(&released);
-                }
-                let bytes = codec.encode_frame(&frame)?;
-                write(&writes, reply, correlation, None, bytes).await
-            })
+            if is_terminal(&frame) {
+                calls.release(&released);
+            }
+            let written = codec.encode_frame(&frame).map(|bytes| write(&writes, reply.clone(), correlation.clone(), None, bytes));
+            Box::pin(async move { written?.await })
         });
         let id = self.calls.hold(key, path.clone());
         (id, path)
@@ -903,7 +900,7 @@ type Delivering = FuturesUnordered<BoxFuture<'static, ()>>;
 
 /// Queues the server's replies with librdkafka one after another, in the order they were queued,
 /// waiting for each delivery report beside the records that follow, until every sender is gone.
-async fn server_writer(producer: FutureProducer, mut queued: mpsc::Receiver<Record>) {
+async fn server_writer(producer: FutureProducer, mut queued: ordered::Receiver<Record>) {
     let mut delivering = Delivering::new();
     loop {
         let Record { topic, correlation, kind, body, answer } = tokio::select! {
@@ -925,12 +922,22 @@ async fn server_writer(producer: FutureProducer, mut queued: mpsc::Receiver<Reco
     while delivering.next().await.is_some() {}
 }
 
-/// Queues one reply-lane record on the server's writer and waits for its delivery report.
-async fn write(writes: &mpsc::Sender<Record>, topic: String, correlation: Option<String>, kind: Option<&'static str>, body: Bytes) -> Result<(), BoxError> {
+/// Queues one message on the server's writer at the call and answers a wait for it to be
+/// published.
+fn write(
+    writes: &ordered::Sender<Record>,
+    topic: String,
+    correlation: Option<String>,
+    kind: Option<&'static str>,
+    body: Bytes,
+) -> impl Future<Output = Result<(), BoxError>> + Send + 'static {
     let (answer, answered) = oneshot::channel();
-    let gone = || BoxError::from("the Kafka link's server side is closed");
-    writes.send(Record { topic, correlation, kind, body, answer }).await.map_err(|_| gone())?;
-    answered.await.map_err(|_| gone())?
+    let room = writes.send(Record { topic, correlation, kind, body, answer });
+    async move {
+        let gone = || BoxError::from("the Kafka link's server side is closed");
+        room.await.map_err(|_| gone())?;
+        answered.await.map_err(|_| gone())?
+    }
 }
 
 /// The client side: the producer, the reply topic every reply lands on, each call's correlation
@@ -950,9 +957,13 @@ struct ClientSide {
 
 enum ClientCall {
     Unary,
-    /// A streamed request: until the server acknowledges the `open`, its `in`, `in_end` and
-    /// `cancel` frames wait in `held`, and the writer produces them in order once it does.
+    /// A streamed request: until the server acknowledges the `open`, its `in` and `in_end` frames
+    /// wait in `held`, and the writer produces them in order once it does.
     Streaming { opened: bool, held: VecDeque<Frame> },
+    /// A streamed request cancelled before the server acknowledged its `open`: the `cancel` waits
+    /// for the acknowledgment and is produced alone, the frames held before it dropped. The entry stays
+    /// until then, or until the link closes when no acknowledgment comes.
+    Cancelled,
 }
 
 const CLOSED: &str = "the Kafka link's client is closed";
@@ -966,7 +977,7 @@ enum Job {
 
 /// Queues the client's records with librdkafka in the order they were queued, waiting for each
 /// delivery report beside the records that follow, until every sender is gone.
-async fn client_writer(side: Arc<ClientSide>, mut queued: mpsc::Receiver<Job>) {
+async fn client_writer(side: Arc<ClientSide>, mut queued: ordered::Receiver<Job>) {
     let mut delivering = Delivering::new();
     loop {
         let job = tokio::select! {
@@ -1033,8 +1044,13 @@ impl ClientSide {
                         self.produce_held(id, Frame::Cancel { id }, delivering).await;
                         let _ = answer.send(Ok(()));
                     }
-                    // The server never acknowledged the `open`, so nothing held is produced.
-                    Some(ClientCall::Streaming { opened: false, .. }) | None => {
+                        // The server takes the `open` and holds the call, so the `cancel` follows once it
+                    // acknowledges it.
+                    Some(ClientCall::Streaming { opened: false, .. }) => {
+                        lock(&self.calls).insert(id, ClientCall::Cancelled);
+                        let _ = answer.send(Ok(()));
+                    }
+                    Some(ClientCall::Cancelled) | None => {
                         let _ = answer.send(Ok(()));
                     }
                 }
@@ -1089,10 +1105,15 @@ impl ClientSide {
     /// The frames held for a streamed request the server has now acknowledged, which the writer
     /// produces before anything queued after the acknowledgment.
     fn opened(&self, id: u64) -> VecDeque<Frame> {
-        match lock(&self.calls).get_mut(&id) {
+        let mut calls = lock(&self.calls);
+        match calls.get_mut(&id) {
             Some(ClientCall::Streaming { opened, held }) if !*opened => {
                 *opened = true;
                 std::mem::take(held)
+            }
+            Some(ClientCall::Cancelled) => {
+                calls.remove(&id);
+                VecDeque::from([Frame::Cancel { id }])
             }
             _ => VecDeque::new(),
         }
@@ -1176,7 +1197,7 @@ async fn route_replies(
     replies: StreamConsumer,
     frames: mpsc::UnboundedSender<Frame>,
     mut closing: oneshot::Receiver<()>,
-    writes: mpsc::Sender<Job>,
+    writes: ordered::Sender<Job>,
 ) {
     // Held detached, so a router dropped before it ends, its client never closed and the runtime
     // shutting down, still drops the consumer on a thread of its own.

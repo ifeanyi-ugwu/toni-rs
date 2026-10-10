@@ -253,6 +253,8 @@ macro_rules! conformance_suite {
             two_instances => delivery::two_instances,
             over_the_bound => admission::over_the_bound,
             client_on_a_thread_without_a_runtime => threads::plain_thread,
+            cancel_follows_its_request => order::cancel_follows_its_request,
+            cancel_before_opened => order::cancel_before_opened,
         );
     };
     (@cases $broker:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {

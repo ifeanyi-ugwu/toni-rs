@@ -10,6 +10,7 @@
 //!     async fn start(app: App<Connected>, mode: Mode) -> Self { /* bind Embedded<Axum>, listen, serve the router */ }
 //!     fn base_url(&self) -> String { /* .. */ }
 //!     fn limits() -> EmbedLimits { <ulo_http_axum::Axum as Embed>::limits() }
+//!     fn connections_read(&self) -> Option<usize> { /* a `ReadCount` over what its listener accepts */ }
 //!     async fn stop(self) { /* .. */ }
 //! }
 //!
@@ -43,6 +44,7 @@ use ulo_http::embed::EmbedLimits;
 
 mod app;
 pub mod cases;
+mod count;
 mod failures;
 mod reference;
 mod wire;
@@ -51,6 +53,7 @@ mod wire;
 pub mod rocket_fairing;
 
 pub use app::{HOST_VALUE_HEADER, HostValue, ORIGIN};
+pub use count::{Counted, ReadCount};
 pub use failures::failures_dir;
 pub use reference::HyperHost;
 
@@ -98,6 +101,17 @@ pub trait Host: Sized + Send + Sync + 'static {
 
     /// What the host declares, which decides the scenarios it runs and the refusals it must show.
     fn limits() -> EmbedLimits;
+
+    /// How many connections the host's server has accepted and read from so far, each counted at
+    /// its first read, or `None` from a server that cannot count them. An embedding host wraps
+    /// what its listener accepts with [`ReadCount::wrap`].
+    ///
+    /// `drain_http1` reads it to know the host has begun reading a connection carrying half a
+    /// request before the drain begins: a host closing its listener at the drain resets a
+    /// connection still in the backlog, and hyper's graceful shutdown closes as idle a connection
+    /// it has read nothing from. On a host answering `None` the scenario fails; such a host
+    /// declares it not applicable, with the reason its server cannot count.
+    fn connections_read(&self) -> Option<usize>;
 
     /// Shuts the app and the host down.
     fn stop(self) -> impl Future<Output = ()> + Send;

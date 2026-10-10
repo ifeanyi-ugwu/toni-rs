@@ -4,8 +4,8 @@
 //!
 //! [`ws_conformance_suite!`]: crate::ws_conformance_suite
 
-use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ulo::{App, AppHandle, BoundAddr, Runtime, Signal, TaskHandle, Timer};
 
@@ -21,6 +21,9 @@ pub mod limits;
 pub mod messages;
 pub mod stream_end;
 
+/// How often [`Served::read_past`] reads the server's count.
+const COUNT_POLL: Duration = Duration::from_millis(10);
+
 /// The suite's app, listening on the host's server and serving until the scenario stops it.
 pub(crate) struct Served<H: Host> {
     addresses: Vec<BoundAddr>,
@@ -29,7 +32,7 @@ pub(crate) struct Served<H: Host> {
     timer: Arc<dyn Timer>,
     pub(crate) probe: Probe,
     serving: TaskHandle,
-    host: PhantomData<fn() -> H>,
+    host: H,
 }
 
 impl<H: Host> Served<H> {
@@ -44,7 +47,8 @@ impl<H: Host> Served<H> {
             .connect()
             .await
             .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not connect: {}", report(&error)));
-        let app = H::bind(app)
+        let (app, host) = H::bind(app);
+        let app = app
             .listen()
             .await
             .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not listen: {}", report(&error)));
@@ -58,7 +62,23 @@ impl<H: Host> Served<H> {
         let serving = runtime.spawn(Box::pin(async move {
             let _ = app.serve(std::future::pending::<Signal>()).await;
         }));
-        Served { addresses, handle, runtime, timer, probe, serving, host: PhantomData }
+        Served { addresses, handle, runtime, timer, probe, serving, host }
+    }
+
+    /// The connections the host's server reports read from, `None` where it cannot count.
+    pub(crate) fn connections_read(&self) -> Option<usize> {
+        self.host.connections_read()
+    }
+
+    /// Waits until the server's count of connections read from passes `counted`, read every
+    /// 10 ms on the app's clock; `what` names the wait if it runs out.
+    pub(crate) async fn read_past(&self, counted: usize, what: &str) {
+        within(self.timer(), what, async {
+            while self.connections_read().is_some_and(|now| now <= counted) {
+                self.timer().sleep(COUNT_POLL).await;
+            }
+        })
+        .await;
     }
 
     pub(crate) fn timer(&self) -> &dyn Timer {

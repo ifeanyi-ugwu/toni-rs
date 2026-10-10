@@ -200,7 +200,7 @@ async fn the_drain_is_drain_and_on_disconnect_still_runs_and_reads_the_session()
     let Started { app, departures, .. } = start().await;
     let mut socket = visit(&app, "ada").await;
     let stopping = tokio::spawn(app.stop());
-    assert_eq!(close_frame(&mut socket).await, Some((1001, "server shutting down".to_owned())));
+    assert_eq!(close_frame(&mut socket).await, Some((1001, "the server is shutting down".to_owned())));
     hang_up(socket).await;
     within("the app's close", stopping).await.unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(departures.0.snapshot(), vec![("ada".to_owned(), DisconnectReason::Drain)]);

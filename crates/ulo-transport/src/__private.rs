@@ -1,5 +1,5 @@
 //! Support for the code a transport's handler attribute generates through `ulo-handler-codegen`,
-//! and the primitives the transport crates share ([`Watch`]). Not part of the public API: names
+//! and the primitives the transport crates share ([`Watch`], [`ordered`]). Not part of the public API: names
 //! and shapes here change with the codegen and the transports.
 
 use std::cell::Cell;
@@ -14,6 +14,11 @@ use crate::extract::{ExtractError, FromCall, Injected};
 use crate::reply::IntoReply;
 
 pub use crate::watch::Watch;
+
+/// The bounded queue that keeps the order its sends were called in.
+pub mod ordered {
+    pub use crate::ordered::{Closed, Receiver, Room, Sender, TrySendError, channel};
+}
 
 /// The marker of a parameter read from the call.
 pub enum ViaCall {}

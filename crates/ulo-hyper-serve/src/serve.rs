@@ -16,7 +16,7 @@ use ulo_net::BoundListener;
 use ulo_net::rustls::ServerConfig;
 
 use crate::handshake::handshake;
-use crate::listener::{Inner, Io, Listener};
+use crate::listener::{Inner, Io, Listener, ReadCount};
 
 /// What the accept loop needs beyond its listeners.
 #[derive(Clone, Debug, Default)]
@@ -25,6 +25,10 @@ pub struct ServeConfig {
     /// until the drain. A server resolves its own `handshake_timeout: Bound` to this, as
     /// `HttpConfig::handshake_timeout_after` does.
     pub handshake_timeout: Option<Duration>,
+    /// Counts the connections the server has read from. A server keeps a clone from its
+    /// construction and hands one here at `bind`, so a caller holding the server's clone reads
+    /// the count after the server has moved into the app.
+    pub read_count: ReadCount,
 }
 
 /// One accepted connection, handed to the consumer's closure on its own task.
@@ -62,6 +66,7 @@ pub struct Serve {
     /// Set by `new`, taken by `run`, or by a `drain` or `close` arriving before it.
     listeners: Mutex<Option<Vec<Listener>>>,
     handshake_timeout: Option<Duration>,
+    read_count: ReadCount,
     /// `drain` sends `true`: every accept loop drops its listener and every connection's
     /// `draining` resolves.
     draining: watch::Sender<bool>,
@@ -88,6 +93,7 @@ impl Serve {
         Ok(Serve {
             listeners: Mutex::new(Some(listeners)),
             handshake_timeout: config.handshake_timeout,
+            read_count: config.read_count.clone(),
             draining: watch::channel(false).0,
             closing: watch::channel(false).0,
             finished: watch::channel(false).0,
@@ -113,6 +119,7 @@ impl Serve {
                 listener,
                 Arc::clone(&connection),
                 self.handshake_timeout,
+                self.read_count.clone(),
                 self.draining.subscribe(),
                 self.closing.subscribe(),
             ));
@@ -174,6 +181,7 @@ async fn accept_loop<F, Fut>(
     listener: Listener,
     connection: Arc<F>,
     handshake_timeout: Option<Duration>,
+    read_count: ReadCount,
     mut draining: watch::Receiver<bool>,
     mut closing: watch::Receiver<bool>,
 ) where
@@ -190,6 +198,7 @@ async fn accept_loop<F, Fut>(
                     listener.tls.clone(),
                     handshake_timeout,
                     Arc::clone(&connection),
+                    read_count.clone(),
                     draining.clone(),
                 ));
             }
@@ -225,6 +234,7 @@ async fn serve_connection<F, Fut>(
     tls: Option<TlsAcceptor>,
     handshake_timeout: Option<Duration>,
     connection: Arc<F>,
+    read_count: ReadCount,
     mut draining: watch::Receiver<bool>,
 ) where
     F: Fn(Accepted) -> Fut + Send + Sync + 'static,
@@ -232,7 +242,7 @@ async fn serve_connection<F, Fut>(
 {
     let local = stream.local_addr().ok();
     let (io, tls) = match tls {
-        None => (Io(Inner::Plain(stream)), None),
+        None => (Io::new(Inner::Plain(stream)), None),
         Some(acceptor) => {
             let outcome = tokio::select! {
                 outcome = handshake(&acceptor, stream, peer, handshake_timeout) => outcome,
@@ -253,5 +263,6 @@ async fn serve_connection<F, Fut>(
     if let Some(info) = tls {
         conn = conn.tls(info);
     }
+    let io = io.counting(read_count);
     (*connection)(Accepted { io, conn, draining: Draining { rx: draining } }).await;
 }

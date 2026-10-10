@@ -20,6 +20,7 @@ use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, Capabilities, Codec, Delivery, DeliveryMode, ErrorBody, Frame, FrameTooLarge, Link, Outbound, Pattern, ReplyPath, ReplyTo,
 };
+use ulo_transport::__private::ordered;
 use ulo_transport::{Details, ErrorKind};
 
 /// The largest frame unless `max_frame` sets one: twice HTTP's default body limit, room for a
@@ -30,7 +31,8 @@ const DEFAULT_MAX_FRAME: u64 = 4 * 1024 * 1024;
 /// before it accepts again.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 
-/// Frames queued for one connection's writer; a full queue makes the next send wait.
+/// Frames queued for one connection's writer ahead of the next send's wait: each send is queued at its call and waits until it is
+/// among this many the writer has not taken.
 const WRITE_QUEUE: usize = 64;
 
 /// Deliveries queued for the server; a full queue holds each connection's reader back.
@@ -81,7 +83,7 @@ pub(crate) struct Prepared {
 pub(crate) struct State {
     bound: Mutex<Vec<BoundAddr>>,
     /// Each open connection's writer queue, for `goaway`.
-    connections: Mutex<HashMap<u64, mpsc::Sender<Bytes>>>,
+    connections: Mutex<HashMap<u64, ordered::Sender<Bytes>>>,
     accept: Mutex<Option<JoinHandle<()>>>,
     phase: watch::Sender<u8>,
     next_connection: AtomicU64,
@@ -171,6 +173,7 @@ impl Link for Tcp {
             .max_frame(Some(self.limit()))
             .ordering(ulo_rpc::Ordering::PerConnection)
             .miss_signal(true)
+            .ordered_control(true)
     }
 
     fn usable(&self) -> Result<(), BoxError> {
@@ -272,7 +275,7 @@ impl Link for Tcp {
         let stream = runtime.run(TcpStream::connect(addr)).await??;
         let _ = stream.set_nodelay(true);
         let (reader, writer) = stream.into_split();
-        let (queue, queued) = mpsc::channel(WRITE_QUEUE);
+        let (queue, queued) = ordered::channel(WRITE_QUEUE);
         let epoch = self.state.client_epoch.subscribe();
         {
             let mut writers = lock(&self.state.client_writers);
@@ -282,12 +285,10 @@ impl Link for Tcp {
         let (codec, limit) = (self.codec, self.limit());
         let (frames, replies) = mpsc::channel(REPLY_QUEUE);
         runtime.handle().spawn(read_replies(reader, epoch, codec, limit, frames));
+        // Queued at the call, so frames go out in the order their sends were called.
         let send = Box::new(move |_pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
-            let queue = queue.clone();
-            Box::pin(async move {
-                let bytes = encode(codec, limit, &frame)?;
-                queue.send(bytes).await.map_err(|_| BoxError::from("the TCP connection closed"))
-            })
+            let queued = encode(codec, limit, &frame).map(|bytes| queue.send(bytes));
+            Box::pin(async move { queued?.await.map_err(|_| BoxError::from("the TCP connection closed")) })
         });
         let replies = futures_util::stream::unfold(replies, |mut replies| async move {
             let frame = replies.recv().await?;
@@ -299,7 +300,7 @@ impl Link for Tcp {
     async fn drain(&self) {
         self.state.phase.send_if_modified(|phase| advance(phase, DRAINING));
         let Ok(goaway) = self.codec.encode_frame(&Frame::Goaway) else { return };
-        let queues: Vec<mpsc::Sender<Bytes>> = lock(&self.state.connections).values().cloned().collect();
+        let queues: Vec<ordered::Sender<Bytes>> = lock(&self.state.connections).values().cloned().collect();
         for queue in queues {
             // A connection whose queue is full is busy writing replies; its caller learns of the
             // drain from the `unavailable` its next call is answered with.
@@ -447,7 +448,7 @@ impl Server {
         IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let (mut reader, writer) = tokio::io::split(io);
-        let (queue, queued) = mpsc::channel(WRITE_QUEUE);
+        let (queue, queued) = ordered::channel(WRITE_QUEUE);
         // The writer runs apart from this task: the server's calls hold reply paths into its queue
         // after the connection's reader has ended, and it ends when the last of them drops.
         self.handle.spawn(write_frames(writer, queued, std::future::pending()));
@@ -637,28 +638,31 @@ impl Ids {
 
 /// Replies to one connection: the server's id written back as the caller's, the mapping forgotten
 /// once a reply ends the call.
-fn reply_path(queue: mpsc::Sender<Bytes>, codec: Codec, limit: u64, ids: Arc<Mutex<Ids>>, peer: SocketAddr) -> ReplyPath {
+fn reply_path(queue: ordered::Sender<Bytes>, codec: Codec, limit: u64, ids: Arc<Mutex<Ids>>, peer: SocketAddr) -> ReplyPath {
     ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
-        let queue = queue.clone();
-        let ids = Arc::clone(&ids);
-        Box::pin(async move {
-            let Some(server) = frame.id() else {
-                return Err("a reply frame carries no id".into());
-            };
-            let Some(caller) = lock(&ids).caller(server) else {
-                return Err("the call is no longer in flight on this connection".into());
-            };
-            let ends = matches!(frame, Frame::Res { .. } | Frame::Err { .. } | Frame::End { .. });
-            let frame = with_id(frame, caller);
-            let bytes = encode(codec, limit, &frame)?;
-            queue.send(bytes).await.map_err(|_| BoxError::from("the TCP connection closed"))?;
-            if ends {
-                lock(&ids).finish(server);
-            }
-            Ok(())
-        })
+        // Queued at the call, so replies go out in the order their sends were called.
+        let queued = queue_reply(&queue, codec, limit, &ids, frame);
+        Box::pin(async move { queued?.await.map_err(|_| BoxError::from("the TCP connection closed")) })
     })
     .peer(peer)
+}
+
+/// `frame` under the caller's id, queued now; the mapping is forgotten once a reply ends the
+/// call.
+fn queue_reply(queue: &ordered::Sender<Bytes>, codec: Codec, limit: u64, ids: &Mutex<Ids>, frame: Frame) -> Result<ordered::Room<Bytes>, BoxError> {
+    let Some(server) = frame.id() else {
+        return Err("a reply frame carries no id".into());
+    };
+    let Some(caller) = lock(ids).caller(server) else {
+        return Err("the call is no longer in flight on this connection".into());
+    };
+    let ends = matches!(frame, Frame::Res { .. } | Frame::Err { .. } | Frame::End { .. });
+    let bytes = encode(codec, limit, &with_id(frame, caller))?;
+    let room = queue.send(bytes);
+    if ends {
+        lock(ids).finish(server);
+    }
+    Ok(room)
 }
 
 /// A reply frame under the caller's id.
@@ -702,7 +706,7 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R, limit: u64) -> io::Res
 
 /// Writes each queued frame behind its length prefix until the queue's senders are gone or `stop`
 /// resolves, then shuts the writer.
-async fn write_frames<W: AsyncWrite + Unpin>(mut writer: W, mut queued: mpsc::Receiver<Bytes>, stop: impl Future<Output = ()>) {
+async fn write_frames<W: AsyncWrite + Unpin>(mut writer: W, mut queued: ordered::Receiver<Bytes>, stop: impl Future<Output = ()>) {
     let mut stop = std::pin::pin!(stop);
     loop {
         let bytes = tokio::select! {

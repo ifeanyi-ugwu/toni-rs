@@ -46,6 +46,7 @@ pub struct GatewayDefaults {
     pub(crate) message_limit: Option<u64>,
     pub(crate) max_connections: Count,
     pub(crate) max_inflight: Count,
+    pub(crate) server_max_inflight: Count,
     pub(crate) max_outbound: Count,
     pub(crate) ping_interval: Bound,
     pub(crate) pong_timeout: Bound,
@@ -65,10 +66,20 @@ impl GatewayDefaults {
         self
     }
 
-    /// Messages in flight per connection, over which the connection stops reading: 1,024 at
-    /// `Count::Default` (`Count::DEFAULT_MAX_INFLIGHT`), none at `Count::Unlimited`.
+    /// Messages in flight per connection, over which the connection stops reading: 64 at
+    /// `Count::Default`, none at `Count::Unlimited`. `Count::Max(0)` is refused in `prepare`.
     pub fn max_inflight(mut self, messages: Count) -> Self {
         self.max_inflight = messages;
+        self
+    }
+
+    /// Messages in flight across every connection of the server, over which every connection
+    /// stops reading until a place frees, a message read as the last place went waiting unhandled
+    /// for one: 1,024 at `Count::Default` (`Count::DEFAULT_MAX_INFLIGHT`), none at
+    /// `Count::Unlimited`. The pressure lands in the clients' TCP buffers rather than as refusals.
+    /// `Count::Max(0)` is refused in `prepare`.
+    pub fn server_max_inflight(mut self, messages: Count) -> Self {
+        self.server_max_inflight = messages;
         self
     }
 
@@ -139,12 +150,20 @@ impl GatewayTable {
         if let Err(error) = hub.prepare() {
             failures.push_error(error);
         }
-        GatewayTable::new(gateways, hub, mounted.app().clone(), Arc::clone(mounted.runtime()))
+        GatewayTable::new(gateways, hub, mounted.app().clone(), Arc::clone(mounted.runtime()), defaults)
     }
 
-    pub(crate) fn new(gateways: Vec<Arc<GatewayRuntime>>, hub: Arc<Hub>, app: AppHandle, runtime: Arc<dyn Runtime>) -> Self {
+    /// `defaults` gives the table its `server_max_inflight`.
+    pub(crate) fn new(
+        gateways: Vec<Arc<GatewayRuntime>>,
+        hub: Arc<Hub>,
+        app: AppHandle,
+        runtime: Arc<dyn Runtime>,
+        defaults: &GatewayDefaults,
+    ) -> Self {
         hub.record_gateways(&gateways);
-        GatewayTable { inner: Arc::new(Inner { gateways, hub, app, runtime, tracker: Tracker::new() }) }
+        let tracker = Tracker::new(defaults.server_max_inflight.max_inflight());
+        GatewayTable { inner: Arc::new(Inner { gateways, hub, app, runtime, tracker }) }
     }
 
     /// Each gateway's path, its controller's prefix joined.

@@ -6,7 +6,9 @@
 //!
 //! A server whose write of the 101 fails is the host here too: the connection hooks stay paired,
 //! `on_disconnect` running once with `Lost` for a connection whose `OnConnect` ran in the
-//! handshake, and nothing running for one whose connection phase had not begun.
+//! handshake, and nothing running for one whose connection phase had not begun. A connection over
+//! `max_connections` runs no hook in either refusal mode, and a connect guard decides before the
+//! slot is taken.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -21,10 +23,13 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use ulo::app::Bound as Serving;
-use ulo::{App, AppHandle, BoxError, DrainToken, Module, ModuleDef, ModuleIdentity, Mounted, Signal, injectable, routes};
+use ulo::{App, AppHandle, BoxError, DrainToken, Guard, Module, ModuleDef, ModuleIdentity, Mounted, Signal, injectable, routes};
 use ulo_http::Upgraded;
 use ulo_transport::prepare::Failures;
-use ulo_ws::{ConnId, ConnectCx, ConnectRefused, Connection, DisconnectReason, GatewayDefaults, GatewayTable, Handshake, OnConnect, OnDisconnect, Ws};
+use ulo_ws::{
+    ConnId, ConnectCx, ConnectRefused, Connection, DisconnectReason, GatewayDefaults, GatewayTable, Handshake, OnConnect, OnDisconnect, Ws,
+    WsConnect,
+};
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -154,6 +159,47 @@ impl OnDisconnect for Loose {
     }
 }
 
+/// The header whose presence `NoRefuseHeader` refuses.
+const REFUSE: &str = "x-refuse";
+
+/// Refuses an upgrade carrying [`REFUSE`].
+struct NoRefuseHeader;
+
+impl Guard<WsConnect> for NoRefuseHeader {
+    async fn can_activate(&self, cx: &ConnectCx) -> Result<bool, BoxError> {
+        Ok(cx.head().headers().get(REFUSE).is_none())
+    }
+}
+
+/// Runs its connection phase once the connection is upgraded, one connection at a time, behind a
+/// connect guard.
+#[injectable]
+struct Capped {
+    hooks: ulo::Dep<Hooks>,
+}
+
+#[routes]
+#[ulo_ws::gateway(path = "/capped", port = own, max_connections = 1, connect_guards(value = NoRefuseHeader))]
+impl Capped {
+    #[ulo_ws::message("echo")]
+    fn echo(&self, text: ulo_ws::Payload<String>) -> String {
+        text.0
+    }
+}
+
+impl OnConnect for Capped {
+    async fn on_connect(&self, cx: &ConnectCx) -> Result<(), ConnectRefused> {
+        self.hooks.push(Hook::Connected(cx.conn().id()));
+        Ok(())
+    }
+}
+
+impl OnDisconnect for Capped {
+    async fn on_disconnect(&self, conn: &Connection, why: DisconnectReason) {
+        self.hooks.push(Hook::Disconnected(conn.id(), why));
+    }
+}
+
 struct Root {
     joined: Joined,
     hooks: Hooks,
@@ -171,6 +217,7 @@ impl Module for Root {
         m.controller::<Held>();
         m.controller::<Paired>();
         m.controller::<Loose>();
+        m.controller::<Capped>();
     }
 }
 
@@ -434,35 +481,87 @@ async fn a_failed_101_before_the_connection_phase_runs_no_hook() {
     assert_eq!(hooks.all(), Vec::new(), "a hook ran for a connection whose connection phase never began");
 }
 
-#[tokio::test]
-async fn a_connection_closed_over_max_connections_after_its_on_connect_runs_on_disconnect() {
-    let app = start().await;
-    let hooks = app.hooks.clone();
-    let Handshake::Switch(first) = app.table.handshake(head("/paired", |_| {}), None).await else {
-        panic!("the connection phase refused a valid upgrade request");
+/// The connection holding `path`'s one slot, shown by an answered message, and its id.
+async fn hold_the_slot(app: &Running, path: &str) -> (WebSocketStream<DuplexStream>, ConnId) {
+    let Handshake::Switch(first) = app.table.handshake(head(path, |_| {}), None).await else {
+        panic!("{path}: a valid upgrade request was refused");
     };
     let (server, mut holder) = pipe().await;
     first.serve(async move { Ok::<_, BoxError>(Upgraded::from_tokio(server)) });
-    // An answer shows the first connection holds the gateway's one slot.
     let message = json!({ "event": "echo", "id": 1, "data": "holding" }).to_string();
     holder.send(Message::text(message)).await.expect("the message was sent");
     within("the holder's reply", holder.next()).await.expect("the connection ended").expect("a read failed");
+    (holder, app.hooks.last_connected())
+}
 
-    let Handshake::Switch(second) = app.table.handshake(head("/paired", |_| {}), None).await else {
-        panic!("the connection phase refused a valid upgrade request");
-    };
-    let id = hooks.last_connected();
-    let (server, mut over) = pipe().await;
-    second.serve(async move { Ok::<_, BoxError>(Upgraded::from_tokio(server)) });
-    let close = within("the second connection's close", over.next()).await.expect("the connection ended").expect("a read failed");
-    let Message::Close(Some(frame)) = close else { panic!("expected a Close frame, got {close:?}") };
-    assert_eq!(u16::from(frame.code), 1013, "{frame:?}");
-    // Read to the end, which sends the client's answering Close the server waits for.
-    within("the second connection's end", async { while let Some(Ok(_)) = over.next().await {} }).await;
+/// The close code `ws`'s server sends first, read to the end of the connection, which sends the
+/// client's answering Close the server waits for.
+async fn close_code(what: &str, ws: &mut WebSocketStream<DuplexStream>) -> u16 {
+    let close = within(what, ws.next()).await.expect("the connection ended").expect("a read failed");
+    let Message::Close(Some(frame)) = close else { panic!("{what}: expected a Close frame, got {close:?}") };
+    within(what, async { while let Some(Ok(_)) = ws.next().await {} }).await;
+    u16::from(frame.code)
+}
+
+/// Hangs up `holder` and waits for its end.
+async fn hang_up(mut holder: WebSocketStream<DuplexStream>) {
     let _ = holder.close(None).await;
     within("the holder's end of the connection", async { while let Some(Ok(_)) = holder.next().await {} }).await;
+}
+
+#[tokio::test]
+async fn a_connection_over_max_connections_admitted_in_the_handshake_is_closed_1013_with_no_hook() {
+    let app = start().await;
+    let hooks = app.hooks.clone();
+    let (holder, holding) = hold_the_slot(&app, "/paired").await;
+
+    let Handshake::Switch(second) = app.table.handshake(head("/paired", |_| {}), None).await else {
+        panic!("the connection phase refused a valid upgrade request: capacity is refused with 1013 after the 101");
+    };
+    let (server, mut over) = pipe().await;
+    second.serve(async move { Ok::<_, BoxError>(Upgraded::from_tokio(server)) });
+    assert_eq!(close_code("the second connection's close", &mut over).await, 1013);
+    hang_up(holder).await;
     app.stop().await;
-    assert_eq!(hooks_of(&hooks, id), vec![Hook::Connected(id), Hook::Disconnected(id, DisconnectReason::ServerClose { code: 1013 })]);
+    let all = hooks.all();
+    assert_eq!(
+        all,
+        vec![Hook::Connected(holding), Hook::Disconnected(holding, DisconnectReason::ClientClose { code: 1005, reason: String::new() })],
+        "a hook ran for the connection refused for capacity"
+    );
+}
+
+#[tokio::test]
+async fn a_full_gateway_s_connect_guard_refuses_first_and_capacity_runs_no_hook() {
+    let app = start().await;
+    let hooks = app.hooks.clone();
+    let (holder, holding) = hold_the_slot(&app, "/capped").await;
+
+    // Refused by the guard, which decides before a slot is asked for.
+    let Handshake::Switch(guarded) = app.table.handshake(head("/capped", |head| {
+        head.headers.insert(REFUSE, HeaderValue::from_static("yes"));
+    }), None).await else {
+        panic!("`refuse = close` switches every valid upgrade request");
+    };
+    let (server, mut refused) = pipe().await;
+    guarded.serve(async move { Ok::<_, BoxError>(Upgraded::from_tokio(server)) });
+    assert_eq!(close_code("the guarded connection's close", &mut refused).await, 1008, "the connect guard's refusal");
+
+    // Admitted by the guard, then refused for capacity before `OnConnect`.
+    let Handshake::Switch(over) = app.table.handshake(head("/capped", |_| {}), None).await else {
+        panic!("`refuse = close` switches every valid upgrade request");
+    };
+    let (server, mut full) = pipe().await;
+    over.serve(async move { Ok::<_, BoxError>(Upgraded::from_tokio(server)) });
+    assert_eq!(close_code("the connection over the limit", &mut full).await, 1013);
+
+    hang_up(holder).await;
+    app.stop().await;
+    assert_eq!(
+        hooks.all(),
+        vec![Hook::Connected(holding), Hook::Disconnected(holding, DisconnectReason::ClientClose { code: 1005, reason: String::new() })],
+        "a hook ran for a connection refused by its guard or for capacity"
+    );
 }
 
 /// The table's own refusal at the drain: the one a standalone server writes, the HTTP server's

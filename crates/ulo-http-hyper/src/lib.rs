@@ -23,6 +23,7 @@ mod backend;
 mod convert;
 
 pub use backend::Hyper;
+pub use ulo_hyper_serve::ReadCount;
 
 /// `ulo_http::Server` over hyper: `ulo_http_hyper::Server::new("0.0.0.0:8080")`.
 pub type Server = ulo_http::Server<Hyper>;

@@ -16,6 +16,7 @@ use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Delivery, DeliveryMode, ErrorBody, Frame, Link, NoDestination, Ordering as Order,
     Outbound, Pattern, ReplyPath, ReplyTo,
 };
+use ulo_transport::__private::ordered;
 use ulo_transport::{Details, ErrorKind};
 
 /// The reserved header a `req` or `open` frame carries in its `h`: the caller's reply channel.
@@ -28,7 +29,8 @@ const REPLY: &str = "ulo-reply";
 /// server that unsubscribed its patterns still receives the items of a streamed request it holds.
 const CONTROL: &str = "ulo:rpc:control";
 
-/// Frames queued for one side's writer; a full queue makes the next send wait.
+/// Frames queued for one side's writer ahead of the next send's wait: each send is queued at its call and waits until it is
+/// among this many the writer has not taken.
 const WRITE_QUEUE: usize = 64;
 
 /// The Redis link.
@@ -87,7 +89,7 @@ impl Link for Redis {
     const NAME: &'static str = "redis";
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::new(DeliveryMode::FanOut).binary(self.codec.binary()).ordering(Order::PerChannel).miss_signal(true)
+        Capabilities::new(DeliveryMode::FanOut).binary(self.codec.binary()).ordering(Order::PerChannel).miss_signal(true).ordered_control(true)
     }
 
     fn usable(&self) -> Result<(), BoxError> {
@@ -120,7 +122,7 @@ impl Link for Redis {
 
         let (phase, _) = watch::channel(Phase::Serving);
         let (deliveries, inbound) = mpsc::unbounded_channel();
-        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        let (writes, queued) = ordered::channel(WRITE_QUEUE);
         runtime.handle().spawn(server_writer(publisher, queued));
         let side = Arc::new(ServerSide {
             client,
@@ -163,15 +165,16 @@ impl Link for Redis {
         let (frames, replies) = mpsc::unbounded_channel();
         let task = runtime.handle().spawn(client_lane(Arc::clone(&side), sink, stream, frames));
         lock(&self.state).client = Some((Arc::clone(&side), task.abort_handle()));
-        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        let (writes, queued) = ordered::channel(WRITE_QUEUE);
         runtime.handle().spawn(client_writer(side, queued));
 
         Ok(Outbound {
+            // Queued at the call, so frames are published in the order their sends were called.
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
-                let writes = writes.clone();
+                let (answer, answered) = oneshot::channel();
+                let room = writes.send(Outgoing { pattern, frame, answer });
                 Box::pin(async move {
-                    let (answer, answered) = oneshot::channel();
-                    writes.send(Outgoing { pattern, frame, answer }).await.map_err(|_| BoxError::from(CLOSED))?;
+                    room.await.map_err(|_| BoxError::from(CLOSED))?;
                     answered.await.map_err(|_| BoxError::from(CLOSED))?
                 })
             }),
@@ -293,7 +296,7 @@ struct Outgoing {
 
 /// Publishes the client's frames one after another, in the order they were queued, until the
 /// connection's send half is dropped.
-async fn client_writer(side: Arc<ClientSide>, mut queued: mpsc::Receiver<Outgoing>) {
+async fn client_writer(side: Arc<ClientSide>, mut queued: ordered::Receiver<Outgoing>) {
     while let Some(Outgoing { pattern, frame, answer }) = queued.recv().await {
         let _ = answer.send(side.send(pattern, frame).await);
     }
@@ -308,18 +311,22 @@ struct Publish {
 
 /// Publishes the server's replies and refusals one after another, in the order they were queued,
 /// until every sender is gone.
-async fn server_writer(mut publisher: ConnectionManager, mut queued: mpsc::Receiver<Publish>) {
+async fn server_writer(mut publisher: ConnectionManager, mut queued: ordered::Receiver<Publish>) {
     while let Some(Publish { channel, bytes, answer }) = queued.recv().await {
         let _ = answer.send(publish(&mut publisher, &channel, &bytes).await.map(drop));
     }
 }
 
-/// Queues one message on the server's writer and waits for it to be published.
-async fn write(writes: &mpsc::Sender<Publish>, channel: String, bytes: Bytes) -> Result<(), BoxError> {
+/// Queues one message on the server's writer at the call and answers a wait for it to be
+/// published.
+fn write(writes: &ordered::Sender<Publish>, channel: String, bytes: Bytes) -> impl Future<Output = Result<(), BoxError>> + Send + 'static {
     let (answer, answered) = oneshot::channel();
-    let gone = || BoxError::from("the Redis link's server side is closed");
-    writes.send(Publish { channel, bytes, answer }).await.map_err(|_| gone())?;
-    answered.await.map_err(|_| gone())?
+    let room = writes.send(Publish { channel, bytes, answer });
+    async move {
+        let gone = || BoxError::from("the Redis link's server side is closed");
+        room.await.map_err(|_| gone())?;
+        answered.await.map_err(|_| gone())?
+    }
 }
 
 /// The server side of a bound link: the writer replies go through, the Pub/Sub sink the drain
@@ -327,7 +334,7 @@ async fn write(writes: &mpsc::Sender<Publish>, channel: String, bytes: Bytes) ->
 struct ServerSide {
     client: redis::Client,
     /// The server's writer, which every reply and refusal is published through.
-    writes: mpsc::Sender<Publish>,
+    writes: ordered::Sender<Publish>,
     codec: Codec,
     /// The link's runtime, which the drain runs on.
     runtime: Tokio,
@@ -450,18 +457,13 @@ impl ServerSide {
         let calls = Arc::clone(&self.calls);
         let key = wire.to_string();
         let released = key.clone();
+        // Queued at the call, so replies are published in the order their sends were called.
         let path = ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
-            let writes = writes.clone();
-            let calls = Arc::clone(&calls);
-            let reply = reply.clone();
-            let released = released.clone();
-            Box::pin(async move {
-                if is_terminal(&frame) {
-                    calls.release(&released);
-                }
-                let bytes = codec.encode_frame(&with_id(frame, wire))?;
-                write(&writes, reply, bytes).await
-            })
+            if is_terminal(&frame) {
+                calls.release(&released);
+            }
+            let written = codec.encode_frame(&with_id(frame, wire)).map(|bytes| write(&writes, reply.clone(), bytes));
+            Box::pin(async move { written?.await })
         });
         let local = self.calls.hold(key, path.clone());
         (local, path)

@@ -7,7 +7,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use ulo::BoxError;
 use ulo_http::{AppService, Backend, BackendLimits, HttpConfig};
-use ulo_hyper_serve::{Accepted, Serve, ServeConfig};
+use ulo_hyper_serve::{Accepted, ReadCount, Serve, ServeConfig};
 use ulo_net::BoundListener;
 use ulo_net::rustls::ServerConfig;
 use ulo_transport::Count;
@@ -21,8 +21,24 @@ use crate::convert;
 /// settings applied.
 #[derive(Default)]
 pub struct Hyper {
+    read_count: ReadCount,
     /// Set by `bind`.
     pub(crate) bound: Option<Bound>,
+}
+
+impl Hyper {
+    /// How many connections the backend has read from, through a clone taken before the server
+    /// moves into the app: each counted at its first read, after its TLS handshake where the
+    /// server has TLS.
+    ///
+    /// ```ignore
+    /// let backend = ulo_http_hyper::Hyper::default();
+    /// let read_count = backend.read_count();
+    /// let app = app.bind(ulo_http_hyper::Server::with_backend("127.0.0.1:0", backend)).listen().await?;
+    /// ```
+    pub fn read_count(&self) -> ReadCount {
+        self.read_count.clone()
+    }
 }
 
 /// What `bind` prepared for `serve`.
@@ -84,7 +100,7 @@ impl Backend for Hyper {
         svc: AppService,
         cfg: &HttpConfig,
     ) -> Result<(), BoxError> {
-        let config = ServeConfig { handshake_timeout: cfg.handshake_timeout_after() };
+        let config = ServeConfig { handshake_timeout: cfg.handshake_timeout_after(), read_count: self.read_count.clone() };
         let serve = Serve::new(listeners, tls, &config)?;
         self.bound = Some(Bound { serve, service: svc, protocols: Arc::new(Protocols::new(cfg)) });
         Ok(())

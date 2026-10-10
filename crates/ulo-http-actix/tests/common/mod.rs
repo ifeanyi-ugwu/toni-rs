@@ -2,6 +2,9 @@
 //! (`host_extensions: false`), so the host's middleware puts `HostValue` there and an
 //! `Embedded::forward` copy carries it across.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use actix_web::HttpMessage;
 use actix_web::dev::Service;
 use actix_web::http::header::{HeaderName, HeaderValue};
@@ -19,6 +22,10 @@ use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROU
 /// which serves HTTP/1.1 alone.
 pub struct ActixHost<const H2C: bool> {
     base_url: String,
+    /// The connections actix has handed to its worker, counted by `on_connect` as each starts,
+    /// before anything is read: actix takes a listener and gives no hold on a connection's stream.
+    /// `drain_http1` asks no more of a host declaring `DrainPending::Closed`, as actix does.
+    started: Arc<AtomicUsize>,
     stop: oneshot::Sender<()>,
     serving: JoinHandle<()>,
 }
@@ -36,6 +43,8 @@ impl<const H2C: bool> Host for ActixHost<H2C> {
         let listener = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap_or_else(|error| startup_failed!("the host did not bind a port: {}", report(&error)));
         let addr = listener.local_addr().unwrap_or_else(|error| startup_failed!("the host's listener has no address: {}", report(&error)));
+        let started = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&started);
         let host = actix_web::HttpServer::new({
             let embedded = embedded.clone();
             move || {
@@ -63,6 +72,9 @@ impl<const H2C: bool> Host for ActixHost<H2C> {
                 }
             }
         })
+        .on_connect(move |_, _| {
+            counted.fetch_add(1, Ordering::AcqRel);
+        })
         .workers(1);
         #[cfg(feature = "conformance-http2")]
         let host = if H2C { host.listen_auto_h2c(listener) } else { host.listen(listener) };
@@ -81,7 +93,7 @@ impl<const H2C: bool> Host for ActixHost<H2C> {
         let serving = tokio::spawn(async move {
             let _ = running.await;
         });
-        ActixHost { base_url: format!("http://{addr}"), stop, serving }
+        ActixHost { base_url: format!("http://{addr}"), started, stop, serving }
     }
 
     fn base_url(&self) -> String {
@@ -90,6 +102,10 @@ impl<const H2C: bool> Host for ActixHost<H2C> {
 
     fn limits() -> EmbedLimits {
         <Actix as Embed>::limits()
+    }
+
+    fn connections_read(&self) -> Option<usize> {
+        Some(self.started.load(Ordering::Acquire))
     }
 
     async fn stop(self) {

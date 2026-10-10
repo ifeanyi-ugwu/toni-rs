@@ -5,7 +5,7 @@
 //!
 //! ```ignore
 //! // crates/ulo-ws-hyper/tests/conformance.rs
-//! struct Standalone;
+//! struct Standalone { read_count: ulo_ws_hyper::ReadCount }
 //!
 //! impl ulo_ws_conformance::Host for Standalone {
 //!     type Runtime = ulo_tokio::Tokio;
@@ -14,7 +14,12 @@
 //!     const CLOSES_IDLE_AT_DRAIN: bool = true; // hyper's graceful shutdown
 //!     fn runtime() -> ulo_tokio::Tokio { ulo_tokio::Tokio::current() }
 //!     fn block_on<F: Future>(fut: F) -> F::Output { /* a runtime of its own per scenario */ }
-//!     fn bind(app: App<Connected>) -> App<Connected> { app.bind(ulo_ws_hyper::Server::new("127.0.0.1:0")) }
+//!     fn bind(app: App<Connected>) -> (App<Connected>, Self) {
+//!         let server = ulo_ws_hyper::Server::new("127.0.0.1:0");
+//!         let read_count = server.read_count();
+//!         (app.bind(server), Standalone { read_count })
+//!     }
+//!     fn connections_read(&self) -> Option<usize> { Some(self.read_count.get()) }
 //!     async fn connect(addresses: &[BoundAddr]) -> io::Result<ulo_http::Upgraded> { /* a TCP connection */ }
 //! }
 //!
@@ -76,8 +81,9 @@ pub const PARALLEL_VAR: &str = "ULO_CONFORMANCE_PARALLEL";
 
 /// One WebSocket server as the suite drives it.
 ///
-/// The type carries no state: each scenario builds its own app, binds it through [`bind`], and
-/// connects through [`connect`] to the addresses the app's `listen()` reported.
+/// Each scenario builds its own app, binds it through [`bind`], which hands back the host value
+/// that scenario reads the server through, and connects through [`connect`] to the addresses the
+/// app's `listen()` reported.
 ///
 /// [`bind`]: Host::bind
 /// [`connect`]: Host::connect
@@ -96,9 +102,9 @@ pub trait Host: Sized + 'static {
     /// begins, rather than keeping it open and answering a request that arrives on it after.
     /// hyper's graceful shutdown closes it. `false` unless a host declares it.
     ///
-    /// `handshake_refuses_during_the_drain` reads it: on a host keeping the connection, an
-    /// upgrade request sent on it during the drain must be answered 503; on one closing it, the
-    /// connection must end with nothing written.
+    /// `handshake_refuses_during_the_drain` reads it for its connection idle between requests: on
+    /// a host keeping it, an upgrade request sent on it during the drain must be answered 503; on
+    /// one closing it, the connection must end with nothing written.
     const CLOSES_IDLE_AT_DRAIN: bool = false;
 
     /// A runtime value; each scenario takes its own, built inside the future [`block_on`] runs, so
@@ -112,9 +118,23 @@ pub trait Host: Sized + 'static {
     fn block_on<F: Future>(fut: F) -> F::Output;
 
     /// Binds the server under test to the suite's app, connected and not yet listening, on a port
-    /// the OS chooses, so no two scenarios contend for one. The suite runs `listen()`, serves, and
+    /// the OS chooses, so no two scenarios contend for one, and hands back the host value
+    /// [`connections_read`] reads that server through. The suite runs `listen()`, serves, and
     /// closes the app.
-    fn bind(app: App<Connected>) -> App<Connected>;
+    ///
+    /// [`connections_read`]: Host::connections_read
+    fn bind(app: App<Connected>) -> (App<Connected>, Self);
+
+    /// How many connections the server has accepted and read from so far, each counted at its
+    /// first read, or `None` from a server that cannot count them.
+    ///
+    /// `handshake_refuses_during_the_drain` reads it to know the server has begun reading a
+    /// connection carrying half an upgrade request before the drain begins: a server stops
+    /// accepting at its drain and drops what it has not accepted, and hyper's graceful shutdown
+    /// closes as idle a connection it has read nothing from. On a host answering `None` the
+    /// scenario fails; such a host declares it not applicable, with the reason its server cannot
+    /// count.
+    fn connections_read(&self) -> Option<usize>;
 
     /// Opens a connection to the server: `addresses` holds every address the app bound,
     /// `App<Bound>::addresses()` in the order the servers started.

@@ -9,7 +9,7 @@ use std::future::{Future, poll_fn};
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
 use std::pin::{Pin, pin};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
@@ -318,6 +318,7 @@ pub(crate) enum Phase {
 /// The connections one server or the hand-off runs: their tasks, the drain signal they watch,
 /// and the drain token their cleanups open terminal executions with.
 pub(crate) struct Tracker {
+    pub(crate) places: Arc<Places>,
     phase: Watch<Phase>,
     token: Watch<Option<DrainToken>>,
     tasks: Mutex<HashMap<u64, TaskHandle>>,
@@ -326,8 +327,11 @@ pub(crate) struct Tracker {
 }
 
 impl Tracker {
-    pub(crate) fn new() -> Arc<Tracker> {
+    /// `max_inflight` is the server's bound on the messages all its connections have in flight
+    /// together, `None` for no bound.
+    pub(crate) fn new(max_inflight: Option<usize>) -> Arc<Tracker> {
         Arc::new(Tracker {
+            places: Arc::new(Places::new(max_inflight)),
             phase: Watch::new(Phase::Serving),
             token: Watch::new(None),
             tasks: Mutex::new(HashMap::new()),
@@ -379,6 +383,41 @@ impl Tracker {
     async fn token(&self) -> Option<DrainToken> {
         self.token.wait_for(Option::is_some).await;
         self.token.read(Clone::clone)
+    }
+}
+
+/// The places in flight one server's connections share, under its `server_max_inflight`. A
+/// message takes one when its handler is to run and gives it back once its answer is known, as it
+/// counts under its own connection's `max_inflight`. A connection reads nothing while every place
+/// is taken, and a message it read as the last place went waits, unhandled, for one.
+pub(crate) struct Places {
+    held: AtomicUsize,
+    limit: usize,
+    /// Wakes the connections waiting for a place, when one frees with none left.
+    freed: Event,
+}
+
+impl Places {
+    fn new(limit: Option<usize>) -> Places {
+        Places { held: AtomicUsize::new(0), limit: limit.unwrap_or(usize::MAX), freed: Event::new() }
+    }
+
+    fn is_full(&self) -> bool {
+        self.held.load(Ordering::Acquire) >= self.limit
+    }
+
+    fn try_take(&self) -> bool {
+        self.held.fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| (held < self.limit).then_some(held + 1)).is_ok()
+    }
+
+    fn give_back(&self, places: usize) {
+        if places == 0 {
+            return;
+        }
+        let before = self.held.fetch_sub(places, Ordering::AcqRel);
+        if before >= self.limit {
+            self.freed.notify(usize::MAX);
+        }
     }
 }
 
@@ -453,19 +492,32 @@ impl Refusal {
 
 /// An upgrade request the handshake accepted, with what the connection needs once upgraded.
 ///
-/// Under `refuse = handshake` the connection phase has run, `OnConnect` included, by the time a
-/// `Switch` exists. Dropped without [`serve`](Self::serve), as when writing the 101 fails, the
-/// connection it admitted gets `on_disconnect` with `DisconnectReason::Lost` and then leaves the
-/// rooms, on a task the table's drain and close reach. Under `refuse = close` nothing has run, and
-/// a dropped `Switch` runs nothing.
+/// Under `refuse = handshake` the connection phase has run by the time a `Switch` exists: the
+/// connect guards admitted the connection, and then either it took a slot under
+/// `max_connections` and `OnConnect` ran, or no slot was free and no hook ran, the connection to
+/// be closed with 1013 once upgraded. Dropped without [`serve`](Self::serve), as when writing the
+/// 101 fails, a connection whose `OnConnect` ran gets `on_disconnect` with
+/// `DisconnectReason::Lost` and then leaves the rooms, on a task the table's drain and close reach.
+/// Under `refuse = close` nothing has run, and a dropped `Switch` runs nothing.
 pub struct Switch {
     accept: Accept,
     head: Arc<Parts>,
     peer: Option<SocketAddr>,
     protocol: Option<Arc<str>>,
     headers: Vec<(HeaderName, HeaderValue)>,
-    /// The connection phase's admission under `refuse = handshake`, taken by `serve`.
-    admitted: Option<Admitted>,
+    /// What the connection phase decided, taken by `serve`.
+    decided: Decided,
+}
+
+/// What the handshake's connection phase decided about a connection it switches.
+enum Decided {
+    /// `refuse = close`: the phase runs once the connection is upgraded.
+    Later,
+    /// Admitted with a slot, `OnConnect` having run.
+    Admitted(Admitted),
+    /// Admitted by the connect guards with no slot free: closed with 1013 once upgraded, no hook
+    /// having run.
+    Full,
 }
 
 impl Switch {
@@ -480,9 +532,10 @@ impl Switch {
 
     /// The connection driver: once `upgraded` yields the upgraded stream, runs the gateway on it
     /// until the connection ends, as a task on the app's runtime that the table's drain and close
-    /// reach. The connection takes a slot under `max_connections` (closing with 1013 over it),
-    /// runs the connection phase unless the handshake ran it, then reads messages until it
-    /// closes, and `on_disconnect` runs for a connection that connected.
+    /// reach. The connection runs the connection phase unless the handshake ran it: the connect
+    /// guards, then a slot under `max_connections` (closing with 1013, no hook having run, when
+    /// none is free), then `OnConnect`. It then reads messages until it closes, and
+    /// `on_disconnect` runs for a connection whose `OnConnect` ran.
     ///
     /// `upgraded` may resolve only once the 101 has been written, as hyper's upgrade does; a
     /// server holding the stream already passes `async move { Ok(io) }`. An `Err` ends the
@@ -493,18 +546,18 @@ impl Switch {
         U: Future<Output = Result<Io, BoxError>> + Send + 'static,
         Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let admitted = self.admitted.take();
+        let decided = std::mem::replace(&mut self.decided, Decided::Later);
         let accept = self.accept.clone();
         let tracker = Arc::clone(&accept.tracker);
         let runtime = Arc::clone(&accept.runtime);
         let (head, peer, protocol) = (Arc::clone(&self.head), self.peer, self.protocol.clone());
-        tracker.spawn(&*runtime, run(accept, head, peer, protocol, upgraded, admitted));
+        tracker.spawn(&*runtime, run(accept, head, peer, protocol, upgraded, decided));
     }
 }
 
 impl Drop for Switch {
     fn drop(&mut self) {
-        if let Some(admitted) = self.admitted.take() {
+        if let Decided::Admitted(admitted) = std::mem::replace(&mut self.decided, Decided::Later) {
             let accept = self.accept.clone();
             self.accept.tracker.spawn(&*self.accept.runtime, async move {
                 admitted.end(&accept, DisconnectReason::Lost).await;
@@ -531,7 +584,7 @@ pub(crate) async fn handshake(accept: Accept, head: Parts, peer: Option<SocketAd
     let head = Arc::new(head);
     let protocol: Option<Arc<str>> = checked.protocol.as_deref().map(Arc::from);
     match accept.gateway.settings().refuse {
-        Refuse::Close => Handshake::Switch(Switch { accept, head, peer, protocol, headers: checked.headers, admitted: None }),
+        Refuse::Close => Handshake::Switch(Switch { accept, head, peer, protocol, headers: checked.headers, decided: Decided::Later }),
         Refuse::Handshake => {
             let (answer, answered) = oneshot::channel();
             let (tracker, runtime) = (Arc::clone(&accept.tracker), Arc::clone(&accept.runtime));
@@ -547,7 +600,7 @@ pub(crate) async fn handshake(accept: Accept, head: Parts, peer: Option<SocketAd
 }
 
 /// The connection phase before the 101: a `Switch` carrying the admitted connection, or the
-/// phase's refusal as a 401 or 403.
+/// connection the guards admitted with no slot free, or the phase's refusal as a 401 or 403.
 async fn connection_phase(
     accept: Accept,
     head: Arc<Parts>,
@@ -556,7 +609,10 @@ async fn connection_phase(
     headers: Vec<(HeaderName, HeaderValue)>,
 ) -> Handshake {
     match connect(&accept, Arc::clone(&head), peer, protocol.clone()).await {
-        Connected::Admitted(admitted) => Handshake::Switch(Switch { accept, head, peer, protocol, headers, admitted: Some(admitted) }),
+        Connected::Admitted(admitted) => {
+            Handshake::Switch(Switch { accept, head, peer, protocol, headers, decided: Decided::Admitted(admitted) })
+        }
+        Connected::Full => Handshake::Switch(Switch { accept, head, peer, protocol, headers, decided: Decided::Full }),
         Connected::Refused(refused) => {
             let mut headers = Vec::new();
             if refused.status() == StatusCode::UNAUTHORIZED {
@@ -567,15 +623,15 @@ async fn connection_phase(
     }
 }
 
-/// The connection after its 101: the slot under `max_connections`, the connection phase unless
-/// the handshake ran it, the read loop, then `on_disconnect` for a connection that connected.
+/// The connection after its 101: the connection phase unless the handshake ran it, the read
+/// loop, then `on_disconnect` for a connection whose `OnConnect` ran.
 async fn run<Io, U>(
     accept: Accept,
     head: Arc<Parts>,
     peer: Option<SocketAddr>,
     protocol: Option<Arc<str>>,
     upgrade: U,
-    admitted: Option<Admitted>,
+    decided: Decided,
 ) where
     U: Future<Output = Result<Io, BoxError>> + Send + 'static,
     Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -584,7 +640,7 @@ async fn run<Io, U>(
         Ok(io) => io,
         Err(error) => {
             tracing::debug!(%error, peer = ?peer, "a WebSocket upgrade did not complete");
-            if let Some(admitted) = admitted {
+            if let Decided::Admitted(admitted) = decided {
                 admitted.end(&accept, DisconnectReason::Lost).await;
             }
             return;
@@ -595,27 +651,21 @@ async fn run<Io, U>(
         .max_message_size(Some(limits.message_limit))
         .max_frame_size(Some(limits.frame_limit));
     let mut ws = WebSocketStream::from_raw_socket(io, Role::Server, Some(config)).await;
-    let Some(slot) = Slot::acquire(&accept.gateway) else {
-        refuse(&mut ws, &accept, 1013, "too many connections").await;
-        if let Some(admitted) = admitted {
-            admitted.end(&accept, DisconnectReason::ServerClose { code: 1013 }).await;
-        }
-        return;
-    };
-    let admitted = match admitted {
-        Some(admitted) => admitted,
-        None => match connect(&accept, head, peer, protocol).await {
+    let admitted = match decided {
+        Decided::Admitted(admitted) => admitted,
+        Decided::Full => return refuse(&mut ws, &accept, 1013, TOO_MANY).await,
+        Decided::Later => match connect(&accept, head, peer, protocol).await {
             Connected::Admitted(admitted) => admitted,
-            Connected::Refused(refused) => {
-                refuse(&mut ws, &accept, refused.close_code(), refused.reason()).await;
-                return;
-            }
+            Connected::Full => return refuse(&mut ws, &accept, 1013, TOO_MANY).await,
+            Connected::Refused(refused) => return refuse(&mut ws, &accept, refused.close_code(), refused.reason()).await,
         },
     };
     let why = serve(ws, &admitted, &accept).await;
     admitted.end(&accept, why).await;
-    drop(slot);
 }
+
+/// The close reason of a connection over `max_connections`.
+const TOO_MANY: &str = "too many connections";
 
 /// A connection's place under its gateway's `max_connections`.
 struct Slot(Arc<GatewayRuntime>);
@@ -703,35 +753,44 @@ fn has_token(headers: &HeaderMap, name: &HeaderName, token: &str) -> bool {
         .any(|item| item.trim().eq_ignore_ascii_case(token))
 }
 
-/// A connection the connection phase admitted, with a hand-written gateway's instance.
+/// A connection the connection phase admitted, with its slot under `max_connections` and a
+/// hand-written gateway's instance.
 struct Admitted {
     conn: Connection,
     instance: Option<Instance>,
+    slot: Slot,
 }
 
 impl Admitted {
-    /// `on_disconnect` with `why`, then out of the rooms: how every admitted connection ends,
-    /// served or not, so a connection that ran `OnConnect` always gets `on_disconnect`.
+    /// `on_disconnect` with `why`, then out of the rooms, then the slot freed: how every admitted
+    /// connection ends, served or not, so a connection that ran `OnConnect` always gets
+    /// `on_disconnect`.
     async fn end(self, accept: &Accept, why: DisconnectReason) {
         disconnect(&self.conn, why, accept).await;
         accept.hub.unregister(self.conn.id());
+        drop(self.slot);
     }
 }
 
 enum Connected {
     Admitted(Admitted),
+    /// The connect guards admitted the connection and no slot was free; no hook ran.
+    Full,
     Refused(ConnectRefused),
 }
 
 /// The connection phase: one execution in the gateway's module with the connection's inputs
 /// seeded, the session built in it before anything else runs, then `dispatch` of the connect
-/// handler, its connect guards and its `OnConnect`. An error no error handler claims refuses
-/// the connection by its kind.
+/// handler: its connect guards, then a slot under `max_connections`, then its `OnConnect`. The
+/// slot is taken where the guards have admitted and no hook has run, as the handler's call
+/// begins, so a guard's refusal holds no slot and a connection refused for capacity runs no
+/// `OnConnect` and needs no `on_disconnect`. An error no error handler claims refuses the
+/// connection by its kind.
 async fn connect(accept: &Accept, head: Arc<Parts>, peer: Option<SocketAddr>, protocol: Option<Arc<str>>) -> Connected {
     let gateway = &accept.gateway;
     let connect = &gateway.connect;
     let Ok(exec) = Execution::open(connect.module(), ExecOptions::new()) else {
-        return Connected::Refused(ConnectRefused { close_code: 1001, reason: "server shutting down".to_owned(), kind: None });
+        return Connected::Refused(ConnectRefused { close_code: 1001, reason: "the server is shutting down".to_owned(), kind: None });
     };
     let id = accept.hub.next_id();
     let info = ConnectionInfo { peer, path: Arc::clone(&gateway.path), id };
@@ -773,17 +832,47 @@ async fn connect(accept: &Accept, head: Arc<Parts>, peer: Option<SocketAddr>, pr
     let call_span = span::call(<WsConnect as Transport>::KEY, "ws.connect", Some(&handler_name));
     call_span.record(span::URL_PATH, &*gateway.path);
     let admit = Arc::clone(&gateway.handler.admit);
-    let outcome = ulo::dispatch(connect, &handle, &cx, move |cx| admit(cx)).instrument(call_span).await;
+    let held: Arc<Mutex<Option<Slot>>> = Arc::default();
+    let full = Arc::new(AtomicBool::new(false));
+    let call = {
+        let (gateway, held, full) = (Arc::clone(gateway), Arc::clone(&held), Arc::clone(&full));
+        move |cx: ConnectCx| -> BoxFuture<'static, Result<ConnectReply, BoxError>> {
+            match Slot::acquire(&gateway) {
+                Some(slot) => {
+                    *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(slot);
+                    admit(cx)
+                }
+                None => {
+                    full.store(true, Ordering::Release);
+                    Box::pin(future::ready(Ok(ConnectReply::Refused(ConnectRefused::kind(ErrorKind::Unavailable, TOO_MANY)))))
+                }
+            }
+        }
+    };
+    let outcome = ulo::dispatch(connect, &handle, &cx, call).instrument(call_span).await;
+    let slot = held.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if full.load(Ordering::Acquire) {
+        accept.hub.unregister(id);
+        return Connected::Full;
+    }
     let reply = outcome.unwrap_or_else(|err| ConnectReply::Refused(ConnectRefused::of_error(err)));
     let refused = match reply {
-        ConnectReply::Admitted => match &gateway.handler.messages {
-            Messages::Envelope => return Connected::Admitted(Admitted { conn, instance: None }),
-            Messages::Raw { instance, .. } => match instance(handle).await {
-                Ok(instance) => return Connected::Admitted(Admitted { conn, instance: Some(instance) }),
-                Err(error) => {
-                    tracing::error!(%error, gateway = %gateway.path, "a hand-written gateway could not be resolved for a connection");
-                    ConnectRefused::kind(ErrorKind::Internal, "internal error")
-                }
+        // An interceptor answering for the handler admits without the call that takes the slot,
+        // so the slot is taken here, no hook having run.
+        ConnectReply::Admitted => match slot.or_else(|| Slot::acquire(gateway)) {
+            None => {
+                accept.hub.unregister(id);
+                return Connected::Full;
+            }
+            Some(slot) => match &gateway.handler.messages {
+                Messages::Envelope => return Connected::Admitted(Admitted { conn, instance: None, slot }),
+                Messages::Raw { instance, .. } => match instance(handle).await {
+                    Ok(instance) => return Connected::Admitted(Admitted { conn, instance: Some(instance), slot }),
+                    Err(error) => {
+                        tracing::error!(%error, gateway = %gateway.path, "a hand-written gateway could not be resolved for a connection");
+                        ConnectRefused::kind(ErrorKind::Internal, "internal error")
+                    }
+                },
             },
         },
         ConnectReply::Refused(refused) => refused,
@@ -858,8 +947,9 @@ fn poll_listener(listener: &mut Option<EventListener>, cx: &mut Context<'_>) -> 
 }
 
 /// A connection's messages in flight, shared with their tasks.
-#[derive(Default)]
 struct Flight {
+    /// The server's places, one held for each message counted in `handling`.
+    places: Arc<Places>,
     /// Messages a handler is still answering, or a hand-written gateway's messages queued or in
     /// `on_message`: over `max_inflight`, the loop stops reading.
     handling: AtomicUsize,
@@ -873,13 +963,32 @@ struct Flight {
 }
 
 impl Flight {
-    fn begin(&self) {
+    fn new(places: Arc<Places>) -> Flight {
+        Flight {
+            places,
+            handling: AtomicUsize::new(0),
+            busy: AtomicUsize::new(0),
+            progress: Event::new(),
+            calls: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(0),
+        }
+    }
+
+    /// Counts one message in, with a place of the server's; `false`, counting nothing, when every
+    /// place is taken.
+    #[must_use]
+    fn begin(&self) -> bool {
+        if !self.places.try_take() {
+            return false;
+        }
         self.handling.fetch_add(1, Ordering::AcqRel);
         self.busy.fetch_add(1, Ordering::AcqRel);
+        true
     }
 
     fn handled(&self) {
         self.handling.fetch_sub(1, Ordering::AcqRel);
+        self.places.give_back(1);
         self.progress.notify(1);
     }
 
@@ -919,6 +1028,14 @@ impl Flight {
         for (_, exec) in self.calls.lock().unwrap_or_else(PoisonError::into_inner).values() {
             exec.cancel_with(CancelReason::Disconnected);
         }
+    }
+}
+
+/// A hand-written gateway's messages still queued when its connection ends are never counted out
+/// of `handling`; their places go back with the connection.
+impl Drop for Flight {
+    fn drop(&mut self) {
+        self.places.give_back(*self.handling.get_mut());
     }
 }
 
@@ -963,7 +1080,8 @@ where
     let gateway = &accept.gateway;
     let limits = &gateway.limits;
     let outbound = Arc::clone(&conn.inner.outbound);
-    let flight = Arc::new(Flight::default());
+    let flight = Arc::new(Flight::new(Arc::clone(&accept.tracker.places)));
+    let places = &accept.tracker.places;
     let mut tasks = TaskSet::new(Arc::clone(&accept.runtime) as Arc<dyn Spawn>);
     let inbox = match (&gateway.handler.messages, &admitted.instance) {
         (Messages::Raw { on_message, .. }, Some(instance)) => {
@@ -981,6 +1099,9 @@ where
     let mut woken: Option<EventListener> = None;
     let mut progressed: Option<EventListener> = None;
     let mut phase_changed: Option<EventListener> = None;
+    let mut freed: Option<EventListener> = None;
+    // A message read as the server's last place went, waiting for one.
+    let mut waiting: Option<Frame> = None;
     let mut turn = 0usize;
 
     let why = loop {
@@ -996,7 +1117,7 @@ where
         }
         let close = match close {
             Some(close) if closing.is_none() => Some(close),
-            _ if draining && closing.is_none() && flight.idle() => Some((1001, "server shutting down".to_owned())),
+            _ if draining && closing.is_none() && flight.idle() => Some((1001, "the server is shutting down".to_owned())),
             _ => None,
         };
         if let Some((code, reason)) = close {
@@ -1008,7 +1129,17 @@ where
             closing = Some(why);
             close_deadline = limits.pong_timeout.map(|after| accept.runtime.sleep(after));
         }
-        let reading = closing.is_some() || (!draining && flight.handling() < limits.max_inflight);
+        if waiting.is_some() || places.is_full() {
+            freed.get_or_insert_with(|| places.freed.listen());
+        }
+        if closing.is_none()
+            && !places.is_full()
+            && let Some(frame) = waiting.take()
+        {
+            waiting = received(frame, conn, &flight, &mut tasks, inbox.as_ref());
+        }
+        let reading = closing.is_some()
+            || (!draining && waiting.is_none() && !places.is_full() && flight.handling() < limits.max_inflight);
         let joining = !tasks.is_empty();
         // Each turn starts at the next branch, so a branch that is always ready cannot starve the
         // others. Every branch's future is dropped before its event is handled.
@@ -1027,6 +1158,7 @@ where
                         5 => poll_sleep(&mut pong, cx).map(|()| Turn::PongMissed),
                         6 => poll_sleep(&mut close_deadline, cx).map(|()| Turn::CloseDeadline),
                         7 if joining => joined.as_mut().poll(cx).map(|_| Turn::Woken),
+                        8 => poll_listener(&mut freed, cx).map(|()| Turn::Woken),
                         _ => Poll::Pending,
                     };
                     if ready.is_ready() {
@@ -1042,10 +1174,10 @@ where
                 None => break closing.unwrap_or(DisconnectReason::Lost),
                 Some(Ok(Message::Text(text))) if closing.is_none() => {
                     let frame = Frame::Text(text.as_str().to_owned());
-                    received(frame, conn, &flight, &mut tasks, inbox.as_ref());
+                    waiting = received(frame, conn, &flight, &mut tasks, inbox.as_ref());
                 }
                 Some(Ok(Message::Binary(bytes))) if closing.is_none() => {
-                    received(Frame::Binary(bytes), conn, &flight, &mut tasks, inbox.as_ref());
+                    waiting = received(Frame::Binary(bytes), conn, &flight, &mut tasks, inbox.as_ref());
                 }
                 Some(Ok(Message::Ping(_))) => {
                     if ws.flush().await.is_err() {
@@ -1101,7 +1233,7 @@ where
 }
 
 /// How many branches the read loop's wait polls.
-const BRANCHES: usize = 8;
+const BRANCHES: usize = 9;
 
 /// What ended one turn of the read loop's wait.
 enum Turn {
@@ -1141,15 +1273,25 @@ where
 }
 
 /// One data message: to a hand-written gateway's inbox, or through the envelope to its handler.
-/// A frame of the kind the gateway's codec does not read closes the connection with 1003.
-fn received(frame: Frame, conn: &Connection, flight: &Arc<Flight>, tasks: &mut TaskSet, inbox: Option<&mpsc::UnboundedSender<Frame>>) {
+/// A frame of the kind the gateway's codec does not read closes the connection with 1003. A
+/// message to be handled with every place of the server's taken is answered back, to wait for one;
+/// a `cancel` and a frame refused before dispatch take no place.
+fn received(
+    frame: Frame,
+    conn: &Connection,
+    flight: &Arc<Flight>,
+    tasks: &mut TaskSet,
+    inbox: Option<&mpsc::UnboundedSender<Frame>>,
+) -> Option<Frame> {
     if let Some(inbox) = inbox {
-        flight.begin();
+        if !flight.begin() {
+            return Some(frame);
+        }
         if inbox.unbounded_send(frame).is_err() {
             flight.handled();
             flight.finished();
         }
-        return;
+        return None;
     }
     let gateway = &conn.inner.gateway;
     let codec = gateway.settings().codec;
@@ -1160,14 +1302,14 @@ fn received(frame: Frame, conn: &Connection, flight: &Arc<Flight>, tasks: &mut T
             Codec::MsgPack => "this gateway reads binary frames",
         };
         outbound.request_close(1003, reason.to_owned());
-        return;
+        return None;
     }
     let head = match envelope::parse(codec, &gateway.event_field, &frame) {
         Ok(head) => head,
         Err(bad) => {
             let error = CallError::new(ErrorKind::BadRequest, bad.reason);
             let _ = outbound.push(envelope::error(codec, bad.id.as_ref(), &error));
-            return;
+            return None;
         }
     };
     if head.event == "cancel" {
@@ -1178,11 +1320,14 @@ fn received(frame: Frame, conn: &Connection, flight: &Arc<Flight>, tasks: &mut T
                 let _ = outbound.push(envelope::error(codec, None, &error));
             }
         }
-        return;
+        return None;
     }
     let event = gateway.events.get(&head.event).map(|event| (event.mounted.clone(), Arc::clone(&event.call)));
-    flight.begin();
+    if !flight.begin() {
+        return Some(frame);
+    }
     tasks.spawn(message(conn.clone(), Arc::clone(flight), event, head));
+    None
 }
 
 /// A hand-written gateway's messages, handed to `on_message` one at a time in order. A panic in

@@ -77,7 +77,9 @@ impl Broker for Mosquitto {
     }
 }
 
-ulo_rpc_conformance::conformance_suite!(Mosquitto);
+ulo_rpc_conformance::conformance_suite!(Mosquitto; not_applicable {
+    cancel_follows_its_request: "U17: the link carries a request and its `cancel` on separate lanes, and the broker may deliver the `cancel` first",
+});
 
 /// How long a test waits for a frame the server's link should deliver.
 const PATIENCE: Duration = Duration::from_secs(5);

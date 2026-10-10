@@ -1,7 +1,8 @@
 //! The gateway attribute's limits past what the WebSocket conformance suite pins, each on a gateway
-//! of its own on the standalone server: one frame over `message_limit`, `max_inflight` of two, and
+//! of its own on the standalone server: one frame over `message_limit`, `max_inflight` of two,
 //! `max_outbound` under both overflow policies, the slow consumer's Close written before anything
-//! queued. The suite (`tests/conformance.rs`) runs a message over the limit after reassembly,
+//! queued, and the two in-flight bounds' own values: a connection's 64 by default, and the
+//! server's across its connections. The suite (`tests/conformance.rs`) runs a message over the limit after reassembly,
 //! `max_connections`, `max_inflight` of one, a streamed answer under `max_outbound`, and
 //! keep-alive. The counts are written as integer literals, which the attribute rewrites to
 //! `Count::Max`, and once as an expression.
@@ -11,14 +12,18 @@
 
 mod support;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
 use serde_json::json;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use tokio_tungstenite::tungstenite::Message;
 use ulo::{Dep, Module, ModuleDef, ModuleIdentity, injectable, routes};
 use ulo_transport::Count;
 use ulo_ws::{Connection, DisconnectReason, Frame, OnDisconnect, Payload, WsCx};
 
-use support::{Record, Running, close_frame, hang_up, next_json, next_message, send_json};
+use support::{Record, Running, Socket, close_frame, hang_up, next_json, next_message, send_json, within};
 
 /// Why each connection on a gateway ended, as (gateway path, reason).
 #[derive(Clone)]
@@ -52,6 +57,71 @@ impl Gate {
 async fn burst(conn: &Connection, n: u32) {
     for i in 1..=n {
         let _ = conn.send(Frame::text(i.to_string())).await;
+    }
+}
+
+/// The `pass` handlers: each counted as it starts and while it runs, then let through one at a
+/// time by the test.
+#[derive(Clone)]
+struct Turnstile {
+    let_through: Arc<Semaphore>,
+    started: Arc<AtomicUsize>,
+    running: Arc<AtomicUsize>,
+    most: Arc<AtomicUsize>,
+}
+
+impl Default for Turnstile {
+    fn default() -> Self {
+        Turnstile {
+            let_through: Arc::new(Semaphore::new(0)),
+            started: Arc::default(),
+            running: Arc::default(),
+            most: Arc::default(),
+        }
+    }
+}
+
+impl Turnstile {
+    async fn pass(&self) -> &'static str {
+        self.started.fetch_add(1, Ordering::AcqRel);
+        let running = self.running.fetch_add(1, Ordering::AcqRel) + 1;
+        self.most.fetch_max(running, Ordering::AcqRel);
+        self.let_through.acquire().await.expect("the turnstile is never closed").forget();
+        self.running.fetch_sub(1, Ordering::AcqRel);
+        "passed"
+    }
+
+    /// Waits until `n` handlers have started.
+    async fn started(&self, n: usize) {
+        within(&format!("{n} handlers starting"), async {
+            while self.started.load(Ordering::Acquire) < n {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+    }
+
+    fn release(&self, n: usize) {
+        self.let_through.add_permits(n);
+    }
+
+    fn most(&self) -> usize {
+        self.most.load(Ordering::Acquire)
+    }
+}
+
+/// Every message a turnstile's handler, the gateway's `max_inflight` left at its default.
+#[injectable]
+struct Queue {
+    turnstile: Dep<Turnstile>,
+}
+
+#[routes]
+#[ulo_ws::gateway(path = "/queue", port = own)]
+impl Queue {
+    #[ulo_ws::message("pass")]
+    async fn pass(&self) -> &'static str {
+        self.turnstile.pass().await
     }
 }
 
@@ -145,6 +215,7 @@ record_ends!(Strict, Lossy, Small);
 struct Root {
     ended: Ended,
     gate: Gate,
+    turnstile: Turnstile,
 }
 
 impl Module for Root {
@@ -155,6 +226,8 @@ impl Module for Root {
     fn register(&self, m: &mut ModuleDef<'_>) {
         m.value(self.ended.clone());
         m.value(self.gate.clone());
+        m.value(self.turnstile.clone());
+        m.controller::<Queue>();
         m.controller::<Parallel>();
         m.controller::<Strict>();
         m.controller::<Lossy>();
@@ -166,14 +239,76 @@ struct Started {
     app: Running,
     ended: Ended,
     gate: Gate,
+    turnstile: Turnstile,
 }
 
 async fn start() -> Started {
+    start_on(ulo_ws_hyper::Server::new("127.0.0.1:0")).await
+}
+
+async fn start_on(server: ulo_ws_hyper::Server) -> Started {
     let ended = Ended(Record::new());
     let gate = Gate { opened: watch::channel(false).0, log: Record::new() };
-    let root = Root { ended: ended.clone(), gate: gate.clone() };
-    let app = Running::start(root, ulo_ws_hyper::Server::new("127.0.0.1:0")).await;
-    Started { app, ended, gate }
+    let turnstile = Turnstile::default();
+    let root = Root { ended: ended.clone(), gate: gate.clone(), turnstile: turnstile.clone() };
+    let app = Running::start(root, server).await;
+    Started { app, ended, gate, turnstile }
+}
+
+/// Reads `n` answers to `pass` on `socket`.
+async fn passed(socket: &mut Socket, n: usize) {
+    for _ in 0..n {
+        let answer = next_json(socket).await;
+        assert_eq!(answer["data"], "passed", "{answer}");
+    }
+}
+
+/// One more message than the connection's default bound: 64 handlers run at once, and the 65th
+/// starts only once one of them has answered.
+#[tokio::test]
+async fn a_connection_holds_64_messages_in_flight_by_default() {
+    let Started { app, turnstile, .. } = start().await;
+    let mut socket = app.connect("/queue", &[]).await;
+    for id in 1..=66 {
+        send_json(&mut socket, &json!({ "event": "pass", "id": id })).await;
+    }
+    turnstile.started(64).await;
+    turnstile.release(1);
+    passed(&mut socket, 1).await;
+    turnstile.started(65).await;
+    turnstile.release(65);
+    passed(&mut socket, 65).await;
+    assert_eq!(turnstile.most(), 64, "the most messages one connection had in flight at once");
+    hang_up(socket).await;
+    app.stop().await;
+}
+
+/// One message on each of five connections, the server bounded at three across them: three run at
+/// once, and each answer lets one more start, the connections having stopped reading meanwhile.
+#[tokio::test]
+async fn the_server_s_connections_together_stop_at_its_bound_and_resume_as_places_free() {
+    let server = ulo_ws_hyper::Server::new("127.0.0.1:0").server_max_inflight(Count::Max(3));
+    let Started { app, turnstile, .. } = start_on(server).await;
+    let mut sockets = Vec::new();
+    for id in 1..=5 {
+        let mut socket = app.connect("/queue", &[]).await;
+        send_json(&mut socket, &json!({ "event": "pass", "id": id })).await;
+        sockets.push(socket);
+    }
+    turnstile.started(3).await;
+    for more in 4..=5 {
+        turnstile.release(1);
+        turnstile.started(more).await;
+    }
+    turnstile.release(3);
+    for socket in &mut sockets {
+        passed(socket, 1).await;
+    }
+    assert_eq!(turnstile.most(), 3, "the most messages the server's connections had in flight at once");
+    for socket in sockets {
+        hang_up(socket).await;
+    }
+    app.stop().await;
 }
 
 #[tokio::test]

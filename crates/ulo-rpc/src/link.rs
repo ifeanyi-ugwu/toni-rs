@@ -195,12 +195,14 @@ impl fmt::Debug for Ack {
 /// client. A link with a miss signal fails `send` with [`NoDestination`]; one refusing a frame over
 /// its size with [`FrameTooLarge`].
 ///
-/// Frames go out in the order their sends are first polled, so a streamed request's `in` items
-/// arrive in order with `in_end` last, and a `cancel` follows the request it names: every link
-/// funnels its frames through one ordered queue to the task that writes them, never a task per
-/// frame. The one exception is a streamed request's `in`, `in_end` and `cancel` on a broker, held
-/// until the server acknowledges the `open` and then sent in their own order. The same holds for a
-/// server's [`ReplyPath`]s.
+/// On TCP, UDP, Redis, RabbitMQ and Kafka, frames go out in the order their sends were called: each
+/// frame takes its place in the writer's queue when `send` is called, before the returned future
+/// is polled, so a streamed request's `in` items arrive in order with `in_end` last and a `cancel`
+/// follows the request it names. NATS and MQTT hand each frame to their client library's one
+/// command channel as the send is polled. No link writes through a task per frame. A streamed
+/// request's `in`, `in_end` and `cancel` on a broker are held until the server acknowledges the
+/// `open` and then sent in their own order, a `cancel` alone. The same holds for a server's
+/// [`ReplyPath`]s.
 pub struct Outbound {
     pub send: Box<dyn Fn(Pattern, Frame, Option<ReplyTo>) -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync>,
     pub replies: BoxStream<'static, Frame>,
@@ -288,6 +290,12 @@ pub struct Capabilities {
     /// rather than `Unavailable`; once the server has closed, a miss is reported as on any link with
     /// `miss_signal`.
     pub confirms_drain: bool,
+    /// A request and its control frames travel one ordered lane end to end, so a `cancel` sent
+    /// after its request reaches the server after it: TCP's connection, Redis's one publisher and
+    /// one Pub/Sub connection. On a broker whose control frames travel a lane of their own the
+    /// broker can deliver a `cancel` first, and the server drops a `cancel` naming no call it
+    /// holds.
+    pub ordered_control: bool,
 }
 
 /// Every call shape, for a link that carries them all.
@@ -299,8 +307,8 @@ pub const UNARY_ONLY: &[Shape] = &[Shape::Unary];
 impl Capabilities {
     /// A link delivering as `delivery`, carrying every shape, JSON, unordered, with no frame limit,
     /// no native backpressure, no miss signal, nothing held for a server that has gone, no reply
-    /// kept through a client's outage, and a confirmed drain: `confirms_drain` is the one
-    /// capability `new` sets `true`.
+    /// kept through a client's outage, control frames on a lane of their own, and a confirmed
+    /// drain: `confirms_drain` is the one capability `new` sets `true`.
     pub const fn new(delivery: DeliveryMode) -> Self {
         Capabilities {
             binary: false,
@@ -313,6 +321,7 @@ impl Capabilities {
             holds_unserved: false,
             durable_replies: false,
             confirms_drain: true,
+            ordered_control: false,
         }
     }
 
@@ -350,6 +359,10 @@ impl Capabilities {
 
     pub const fn confirms_drain(self, confirms_drain: bool) -> Self {
         Capabilities { confirms_drain, ..self }
+    }
+
+    pub const fn ordered_control(self, ordered_control: bool) -> Self {
+        Capabilities { ordered_control, ..self }
     }
 }
 

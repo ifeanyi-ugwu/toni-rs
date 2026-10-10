@@ -368,7 +368,7 @@ impl ulo::Server for Server {
             Bound::After(after) => Some(after),
             Bound::Unbounded => None,
         };
-        let serve = Serve::new(listeners, tls, &ServeConfig { handshake_timeout })?;
+        let serve = Serve::new(listeners, tls, &ServeConfig { handshake_timeout, ..ServeConfig::default() })?;
         let mut connections = http2::Builder::new(TokioExecutor::new());
         connections.timer(TokioTimer::new());
         match self.max_concurrent_streams {

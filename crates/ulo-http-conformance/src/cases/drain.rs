@@ -9,34 +9,34 @@ use tokio::net::TcpStream;
 use ulo::Signal;
 use ulo_http::embed::{DrainAbandoned, DrainHttp2, DrainPending};
 
-use crate::wire::{Exchange, PATIENCE, Raw, Running, has_header, not_a_timeout, start, status_of};
+use crate::wire::{PATIENCE, Raw, Running, has_header, not_a_timeout, start, status_of};
 use crate::{Host, Mode};
 
-/// How long after the drain begins a host has to apply its graceful stop to its connections
-/// before the scenario finishes a request head. actix's stop reaches each connection through its
-/// server's command loop and then its worker, so a head finished at once can reach the app before
-/// the connection learns of the stop.
-const STOP_SETTLES: Duration = Duration::from_millis(250);
-
 /// A request whose head is half written before the shutdown, answered as the host's
-/// `drain_pending` declares: where `Served`, the head is finished once the host has had
-/// `STOP_SETTLES` to apply its stop, and the app answers 503 with `Connection: close`; where
-/// `Closed`, the head is never finished and the host closes the connection with no answer, since a
-/// head finished before the host processes its stop would reach the app.
+/// `drain_pending` declares: where `Served`, the head is finished once the drain has begun, and
+/// the app answers 503 with `Connection: close`; where `Closed`, the head is never finished and the
+/// host closes the connection with no answer, since a head finished before the host processes its
+/// stop would reach the app.
 ///
 /// A host that closes its listener when the drain begins resets a connection still in the
-/// backlog. A request answered on a second connection opened after this one shows the host
-/// has accepted this one, since a listener hands connections over in the order they arrived.
+/// backlog, and hyper's graceful shutdown closes as idle a connection it has read nothing from, so
+/// the drain begins only once the host's own count of connections read from includes this one,
+/// and no accept order is assumed. A host whose server cannot count fails here, and declares the
+/// scenario not applicable.
 pub async fn http1<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
+    let Some(counted) = host.host.connections_read() else {
+        panic!(
+            "the host reports no count of the connections it read from, so nothing shows a connection carrying half a request was \
+             in progress before the drain: declare `drain_http1` not applicable with the reason it cannot count"
+        )
+    };
     let mut raw = Raw::connect(&host.authority()).await;
     raw.write(format!("GET {} HTTP/1.1\r\nHost: suite\r\n", host.target("/hit")).as_bytes()).await;
-    let accepted = host.send(Exchange::get("/hit")).await;
-    assert_eq!(accepted.status, 200, "the request proving the first connection was accepted");
+    host.read_past(counted, "the host's count including the connection carrying half a request").await;
     let closing = begin_close(&host).await;
     match H::limits().drain_pending {
         DrainPending::Served => {
-            tokio::time::sleep(STOP_SETTLES).await;
             raw.write(b"\r\n").await;
             let answer = raw.read_to_close("the host declares `DrainPending::Served`, so a request finished during the drain is answered").await;
             assert_eq!(

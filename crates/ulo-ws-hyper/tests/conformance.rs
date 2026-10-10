@@ -11,8 +11,11 @@ use ulo_http::Upgraded;
 use ulo_tokio::Tokio;
 use ulo_ws::Port;
 use ulo_ws_conformance::{Host, ws_conformance_suite};
+use ulo_ws_hyper::ReadCount;
 
-struct Standalone;
+struct Standalone {
+    read_count: ReadCount,
+}
 
 impl Host for Standalone {
     type Runtime = Tokio;
@@ -34,8 +37,14 @@ impl Host for Standalone {
             .block_on(fut)
     }
 
-    fn bind(app: App<Connected>) -> App<Connected> {
-        app.bind(ulo_ws_hyper::Server::new("127.0.0.1:0"))
+    fn bind(app: App<Connected>) -> (App<Connected>, Self) {
+        let server = ulo_ws_hyper::Server::new("127.0.0.1:0");
+        let read_count = server.read_count();
+        (app.bind(server), Standalone { read_count })
+    }
+
+    fn connections_read(&self) -> Option<usize> {
+        Some(self.read_count.get())
     }
 
     async fn connect(addresses: &[BoundAddr]) -> io::Result<Upgraded> {

@@ -7,19 +7,23 @@ use tokio::task::JoinHandle;
 use ulo::app::Connected;
 use ulo::{App, Signal};
 use ulo_http::embed::EmbedLimits;
+use ulo_http_hyper::{Hyper, ReadCount};
 
 use crate::{Host, Mode, report};
 
 /// The reference host.
 pub struct HyperHost {
     pub(crate) base_url: String,
+    read_count: ReadCount,
     stop: oneshot::Sender<()>,
     serving: JoinHandle<()>,
 }
 
 impl Host for HyperHost {
     async fn start(app: App<Connected>, _mode: Mode) -> Self {
-        let server = ulo_http_hyper::Server::new("127.0.0.1:0").h2c(true);
+        let backend = Hyper::default();
+        let read_count = backend.read_count();
+        let server = ulo_http_hyper::Server::with_backend("127.0.0.1:0", backend).h2c(true);
         let app = app
             .bind(server)
             .listen()
@@ -35,7 +39,7 @@ impl Host for HyperHost {
                 })
                 .await;
         });
-        HyperHost { base_url: format!("http://{addr}"), stop, serving }
+        HyperHost { base_url: format!("http://{addr}"), read_count, stop, serving }
     }
 
     fn base_url(&self) -> String {
@@ -44,6 +48,10 @@ impl Host for HyperHost {
 
     fn limits() -> EmbedLimits {
         EmbedLimits::NONE
+    }
+
+    fn connections_read(&self) -> Option<usize> {
+        Some(self.read_count.get())
     }
 
     async fn stop(self) {

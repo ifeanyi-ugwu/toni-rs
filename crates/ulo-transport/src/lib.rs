@@ -19,6 +19,7 @@ mod reply;
 mod task_set;
 mod tracked;
 mod validate;
+mod ordered;
 mod watch;
 
 pub mod prepare;

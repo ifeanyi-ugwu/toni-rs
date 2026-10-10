@@ -45,7 +45,7 @@ pub async fn drain<H: Host>() {
     let app = Served::<H>::start().await;
     let mut conn = app.connect("/echo", &[]).await;
     let closing = app.close_in_background();
-    assert_eq!(conn.close_frame().await, Some((1001, "server shutting down".to_owned())), "an idle connection at the drain");
+    assert_eq!(conn.close_frame().await, Some((1001, "the server is shutting down".to_owned())), "an idle connection at the drain");
     conn.hang_up().await;
     let probe = app.probe.clone();
     app.closed(closing).await;

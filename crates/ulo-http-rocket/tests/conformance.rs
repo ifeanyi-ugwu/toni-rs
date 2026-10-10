@@ -80,10 +80,18 @@ impl Host for RocketHost {
         <Rocket as Embed>::limits()
     }
 
+    /// rocket 0.5 binds and accepts inside `launch`, and neither takes a listener nor reports a
+    /// connection.
+    fn connections_read(&self) -> Option<usize> {
+        None
+    }
+
     async fn stop(self) {
         let _ = self.stop.send(());
         let _ = self.serving.await;
     }
 }
 
-ulo_http_conformance::http_conformance_suite!(RocketHost);
+ulo_http_conformance::http_conformance_suite!(RocketHost; not_applicable {
+    drain_http1: "rocket 0.5 binds and accepts inside `launch`, takes no listener and reports no connection, so the suite cannot show a request in progress when the drain begins",
+});

@@ -68,6 +68,17 @@ pub(crate) fn is_reference<H: Host>() -> bool {
 }
 
 impl<H: Host> Running<H> {
+    /// Waits until the host's count of connections read from passes `counted`, read every 10 ms;
+    /// `what` names the wait if it runs out after [`PATIENCE`].
+    pub(crate) async fn read_past(&self, counted: usize, what: &str) {
+        let waited = tokio::time::timeout(PATIENCE, async {
+            while self.host.connections_read().is_some_and(|now| now <= counted) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        waited.await.unwrap_or_else(|_| panic!("{what} did not happen within {PATIENCE:?}"));
+    }
+
     /// The URL of `path` in the app: under [`PREFIX`] when nested.
     pub(crate) fn url(&self, path: &str) -> String {
         let prefix = if self.mode == Mode::Nested && !is_reference::<H>() { PREFIX } else { "" };

@@ -60,4 +60,6 @@ impl Broker for NatsServer {
     }
 }
 
-ulo_rpc_conformance::conformance_suite!(NatsServer);
+ulo_rpc_conformance::conformance_suite!(NatsServer; not_applicable {
+    cancel_follows_its_request: "U17: the link carries a request and its `cancel` on separate lanes, and the broker may deliver the `cancel` first",
+});

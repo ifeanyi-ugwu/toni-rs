@@ -35,4 +35,6 @@ impl Broker for Loopback {
 
 ulo_rpc_conformance::conformance_suite!(Loopback; not_applicable {
     recovery_after_disrupt: "UDP holds no connection to lose",
+    cancel_follows_its_request: "datagrams arrive in any order, so a `cancel` may overtake its request",
+    cancel_before_opened: "UDP carries no streamed request",
 });
