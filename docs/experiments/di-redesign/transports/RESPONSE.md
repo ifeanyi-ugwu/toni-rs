@@ -1711,3 +1711,41 @@ S4 is a real problem, and I'd answer it no. Ordering has to be per link, not jus
 **S10. Accepted.** It is worth renaming the CI job to something like "broker integration" now that it covers more than RPC.
 
 **F369 and F370. Fix soon.** F369 is a leak: each abandoned connect leaves an event loop running. For F370, if that commit blocks a *runtime* thread, it is the same problem the Kafka crate's own blocking threads exist to solve, so move it there, the way the drops and the backoff moved.
+
+## Forty-second response: paired hooks, and an accepted-connection hook for the suites
+
+Received 2026-10-10, answering `divergences/race2b-tests20.md` (S1–S6, F371–F373). The user signed it off the same day; it builds in test batch 23, after batches 21 and 22 and before runtime stage e2.
+
+F371 is the important find here: `OnConnect` cut off mid-await, leaving a connection in its rooms with no `on_disconnect`, on both servers. A test that fails without the fix is the right proof.
+
+**S5. Accept the declaration, and add the hook too, since it fixes F372 and F373 together.** The declaration describes designed behaviour, not a quirk. §9.5 says the drain closes idle keep-alive connections at once, and that is exactly what both hosts do. So `CLOSES_IDLE_AT_DRAIN` is a true statement, and asserting a silent close within half the drain window is the right check.
+
+What follows from it: on a correct server, the 503 only applies to a connection that is *busy* when the drain begins, one whose handshake has started but not yet finished. The HTTP suite already reaches that state, by sending half a request head before the drain and the rest after. The WebSocket scenario can do the same on a fresh connection: half the upgrade head, start the drain, then the rest, expecting the 503. What it lacks is a way to know the server had *accepted* that fresh connection before the drain started. That is exactly the gap F373 describes in the HTTP suite.
+
+So add the hook: a `Host` method reporting how many connections the server has accepted. `ulo-hyper-serve` already tracks connections for the drain, so it is one accessor there. The scenario waits until the count includes its connection, then starts the drain. With that one hook:
+
+- the 503 branch runs on real hosts (closing F372);
+- the HTTP suite's drain scenario drops its arrival-order assumption and fixed wait (closing F373).
+
+**S1. Take the slot before `OnConnect`, after the guards.** Running `OnConnect` for a connection about to be refused for capacity means its side effects (registering presence, joining rooms, announcing a user) happen and are then immediately undone. Other clients see a user flicker in and out. The order should be: guards decide admission first, so a guard refusal never consumes a slot (as W 28 settled); then take the slot, and close with 1013 if none is free, *before* any hook runs; then `OnConnect`. A connection refused for capacity then never connected, so there is nothing to pair with `on_disconnect`.
+
+**S2. Accepted.** One task per handshake connection phase is the cost of F371's fix, and it is what makes the drain wait for it.
+
+**S3. Accepted.** `on_disconnect` still seeing the connection's rooms is what a presence-cleanup hook needs.
+
+**S4. Accepted.** One `ZeroTimeout` type, with the same wording on both paths.
+
+**S6. Accepted.** An in-crate test reaching private state is fine when the code under test leaves no public seam. The concurrency it protects is the reason the test exists at all.
+
+## Forty-third response: batch 19's open decisions
+
+Received 2026-10-10, answering `divergences/race2b-tests19.md` (S11–S16). The chat reports answering
+these earlier; that answer did not reach this record, and this is its short form, unchanged.
+The user signed it off the same day; it builds in test batch 23 with the forty-second response.
+
+- **S11. Both.** Return the per-connection default to 64, which protects against one chatty client. Add a server-wide bound defaulting to 1,024, consistent with the other transports, which protects memory. Over the server-wide bound, the gateway stops reading from connections, the same mechanism as the per-connection bound, so the pressure lands in clients' TCP buffers rather than as refusals.
+- **S15. Keep the ordering.** Freeing the place before settling the `Ack` is the only order in which a holding broker can't deliver into a place that is still occupied. Three passing runs with the order reversed mean the window is narrow, not absent. Pin it with a widened-window probe if it is cheap (the F364 technique), or at least leave a comment at that spot saying why the order matters.
+- **S16. Accepted.** Holding the record is what a holding link promises, and refusing it would turn backpressure into loss.
+- **S12. Accepted.** The race resolves to the correct `unavailable` either way.
+- **S13. Use the same phrase anyway,** "the server is shutting down". A close frame isn't a refusal, but one wording for one condition helps log searches and clients, and it fits within the 123-byte reason limit.
+- **S14. Accepted,** since the link is RabbitMQ-specific and documented as such.
