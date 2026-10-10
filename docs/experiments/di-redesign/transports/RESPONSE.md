@@ -1648,3 +1648,66 @@ The proof then becomes real: one CI job runs the HTTP suite, the WebSocket suite
 **On ordering:** this is the largest item in stage e. For an earlier checkpoint, run (b) and (c) first; they find hub problems cheaply. But don't write "runtime-neutral" in the docs until (a) passes.
 
 **F367:** yes, in stage e with the links, as decided above, with its real-Redis test (two processes, one room, a broadcast reaching across).
+
+## Thirty-ninth response: the core runtime interface's sign-offs
+
+Received 2026-10-10, answering `divergences/runtime-a.md` (S1–S6; F360 and S7 were settled earlier). The user signed it off the same day; it builds in test batch 21, after batch 20.
+
+Four of these I'd accept as built. S4 should compose rather than clear, and S6 should keep the panic's message.
+
+**S1. Accepted, and it corrects my answer 1.** I said the smol adapter's `abort` drops the `Task`, and that was wrong for exactly the reason given: on smol, dropping only starts cancellation, while `cancel()` finishes when the future is gone. "Aborted means the future has been dropped and its resources released" is the definition the drain needs, so it is the right rule. Pinning it in the shared runtime scenario means any future runtime adapter is held to it too.
+
+**S2. Accepted, with one line of documentation.** A slot keeps the core free of a channel dependency, which matters more than which mechanism is used. Answering `Err(Finished)` to a second poll is a reasonable non-panicking reply to a misuse, but it reads oddly (it says "finished", as an error). State it in the docs: "polling after the value was taken answers `Err(TaskEnd::Finished)`". Then nobody mistakes it for a failure of the task itself.
+
+**S3. Accepted.** The asymmetry is principled: a set owns its tasks, while a single handle is a view of something already running. It matches `JoinSet` and `JoinHandle`, so tokio users will find it unsurprising. The docs on both types state it in one sentence each.
+
+**S4. Compose instead of clear.** "Last call wins" here means `.runtime(r).timer(t)` silently loses the ability to spawn, so the app fails much later, far from the line that caused it. And that combination is useful: a real runtime with a fake clock is exactly what tests want. So treat the two as separate pieces. `.runtime(r)` sets both spawning and the clock. `.timer(t)` sets only the clock. Each call overrides only what it sets, applied in order. Then `.runtime(r).timer(t)` is r's spawning with t's clock, and `.timer(t).runtime(r)` is r for both. Nothing is ever dropped without someone asking for it.
+
+**S5. Accepted.** It is the same rule as the refused `dyn Timer` override, for the same reason: the runtime is app configuration, not a binding. The refusal's hint names the test builder's way to set it, as the timer's does.
+
+**S6. Keep the message.** A panic report without its message is the worst kind of debugging evidence: something crashed, and you can't tell what. The core already has the right shape for this. `PanicRecovered` carries the payload converted to a message, redacted, and `FailureReason::Panicked` does the same. Make it `TaskEnd::Panicked(Redacted)` for consistency. A panic raised *while* an aborted future is being dropped reading as `Aborted` is right, since the abort was the intended outcome, but log that secondary panic at `warn` so it isn't swallowed silently.
+
+## Fortieth response: the runtime-free HTTP hub's sign-offs
+
+Received 2026-10-10, answering `divergences/runtime-b.md` (S1–S4 and S6; S5 was settled by stage d). The user signed it off the same day; it builds in test batch 21, after batch 20.
+
+S1, S2 and S3 are accepted. S4 should become two symmetric constructors, and S6 should generate its certificates.
+
+**S1. Accepted, with one thing to keep consistent.** Moving the extraction behind a defaulted `Embed` method is better than a `hyper` feature: the hub stays free of hyper, and the hosts that already did their own extraction change nothing. The thing to keep consistent: a host that declares `upgrades: true` but keeps the default `take_upgrade` (which answers `None`) would advertise upgrades it never delivers. The WebSocket and HTTP suites' upgrade scenarios already assert `upgrades` in both directions, so that mismatch fails a test. It is worth one sentence on the method's docs: "a host declaring `upgrades: true` must implement this".
+
+**S2. Accepted.** Stopping at rustls's own config is the right seam. It is the one type both runtimes' TLS stacks start from, and it costs the tokio path nothing. The two-compat-layer cost avoided would have fallen on all traffic, every read, so this is a real performance decision, not just a tidy one.
+
+**S3. Accepted.** Upgraded connections are a small share of traffic, and the extra buffer initialisation is cheap next to WebSocket framing.
+
+**S4. Two symmetric constructors, and drop `new`.** The confusing error comes from `new` *looking* runtime-agnostic while requiring one particular trait family. Name both explicitly: `Upgraded::from_futures(io)` and `Upgraded::from_tokio(io)` (the latter behind the `tokio-io` feature). That follows the `from_*` conversion convention, and the choice becomes visible where the code is written. A tokio user browsing the constructors finds `from_tokio` directly instead of decoding a trait-bound error.
+
+**S6. Generate the certificates at test time with `rcgen`.** Committed test certificates have an expiry date, and the classic failure is a test suite that suddenly breaks one day years later, with no code change, because a fixture expired. Generating them per run removes that, and it also removes the cross-crate relative paths, which break whenever a crate moves. Put a small helper (a self-signed certificate and key for `localhost`, plus a CA when a test needs client verification) in one place every crate's tests can use: a `publish = false` test-support crate, or a `test-util` feature on `ulo-net`. Then every TLS test gets fresh certificates from one function.
+
+## Forty-first response: the links' own runtime handles
+
+Received 2026-10-10, answering `divergences/runtime-e1.md` (S1–S10, F369, F370). The user signed it off the same day; it builds in test batch 22, after batch 21 and before runtime stage e2.
+
+S4 is a real problem, and I'd answer it no. Ordering has to be per link, not just per call. S1 and S9 want small changes. The rest are accepted.
+
+**S4. Not acceptable, and the problem is bigger than cancels.** With one task per frame, the *data* frames of a single call can reorder as well, not only a cancel against its request. A streamed request's `in` items, and `in_end` itself, could arrive at the server out of order. That is silent corruption of a client stream, which no error would report. The rule must be: frames from one link go out in the order they were sent. Give each link (or each connection, on TCP and UDP) one writer task fed by an ordered channel, which is the shape the TCP writer already has. The cost is one task per link instead of one per frame, which is also cheaper. Then the only remaining cancel race is the one already documented in U17 (a cancel overtaking its request *at the broker*, across different lanes), and that stays acceptable.
+
+**S1. Accepted for servers, but the client's error is the wrong kind.** Refusing in `prepare`, so `listen()` fails naming `.with_handle(..)`, is right. But a client call failing with `Unavailable` tells the caller "try again later" about a permanent configuration mistake. Two improvements:
+
+- **Through `RpcClientModule`:** call the link's `prepare` in the module's connect-phase hook, so a client without a handle fails at startup like a server does.
+- **Through `RpcClient::new` directly:** check at construction and return a `Result` naming `.with_handle(..)`. Construction is where the mistake is made, and it is the same rule as S3's zero timeout.
+
+`Tcp::new(..).with_handle(h)` off a runtime still works, since the check happens when the link is *used* by a client or server, not when it is built.
+
+**S9. Yes, add a defaulted `prepare` to `BroadcastAdapter`.** Failing every publish with only an error log turns a startup misconfiguration into missing messages in production, the pass-on-silence shape again. The hub's own `prepare` (the hand-off's and the standalone server's) calls the adapter's, so a Redis adapter without a handle fails `listen()` naming `.with_handle(..)`. The default returns `Ok(())`, so the in-memory adapter changes nothing.
+
+**S2. Accepted.** The tokio links depending on `ulo-tokio` is the honest dependency, since that is where their runtime comes from.
+
+**S3. Accepted.** Awaiting the `JoinHandle` is the simplest way to get the result back, and it works without a runtime on the waiting side, which is exactly what F363 needed.
+
+**S5. Accepted.** One reader task per lane keeps reply order, and 64 frames of read-ahead is a reasonable buffer.
+
+**S6, S7 and S8. Accepted.** An executor the caller owns keeps smol's global state out of the framework, which matters for tests and embedding.
+
+**S10. Accepted.** It is worth renaming the CI job to something like "broker integration" now that it covers more than RPC.
+
+**F369 and F370. Fix soon.** F369 is a leak: each abandoned connect leaves an event loop running. For F370, if that commit blocks a *runtime* thread, it is the same problem the Kafka crate's own blocking threads exist to solve, so move it there, the way the drops and the backoff moved.
