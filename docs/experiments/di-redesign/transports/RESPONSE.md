@@ -1796,3 +1796,23 @@ Thanks for checking S4 against the code rather than taking my premise. Data fram
 **S6 and S7. Accepted.**
 
 **F376. Fix it in batch 23.** A held call the server keeps forever is a resource leak until the drain. The client already holds a streamed request's control frames in the call's entry until `opened` arrives, so the fix is to hold the `cancel` there too, instead of discarding it. When `opened` arrives, the held `cancel` goes out first, in order. The server sees a call open and cancel immediately, and nothing is leaked.
+
+## Forty-sixth response: the call-ordered queue and the read-connection hook
+
+Received 2026-10-10, answering `divergences/race2b-tests23.md` (S1–S8, F377–F380). The user signed it off the same day; S3, F379 and F377's rewording join test batch 24, which was building.
+
+F380 is a good catch, and an instructive one: batch 22 fixed a frame's place in the queue when room appeared, not when `send` was called, so the ordering it promised only held when nothing had to wait. Enqueuing at the call, before any await, is the right fix, and one shared queue for all five links means the rule can't drift between them. 200 of 200 under CPU load is the evidence that counts.
+
+**S1. Accepted.** The behaviour behind F377 is arguably correct: a connection the server accepted but hasn't read a byte from is, by any reasonable definition, idle, and the drain closes idle connections. Counting at the first read measures exactly what the scenarios need ("this connection is live"), and the name says so. Record F377 as hyper's documented behaviour rather than as a bug. Rocket being not applicable, with F378 as the reason, follows the suite's rules.
+
+**S2. Accepted, with no new core point.** Taking the slot inside the connect handler means a capacity refusal is the handler's own result, so interceptors see a connection attempt and its refusal, which is what a logging or timing interceptor should record. A dedicated point between guards and interceptors would be new core surface for one transport's needs. And a guard-refused connection on a full gateway closing with 1008 is the correct outcome: the guard decided first, and its reason is the true one.
+
+**S3. Make the untested half observable rather than accept it untested.** Both halves currently produce the same visible effect, handlers bounded, so the tests can't tell them apart. But "stop reading" has its own purpose: leaving messages in the clients' TCP buffers instead of accumulating them in the server's memory. That *is* observable. Count messages read off sockets (the same idea as `connections_read`) and assert that, once the gateway is saturated, the count stops rising beyond the bound plus one message per connection. Then removing "stop reading" alone fails a test, and the half that protects memory is held like the half that protects handlers.
+
+**S8. Accepted.** Each waiting send held its frame before too, so total memory is unchanged, and a ticket plus a per-writer reorder buffer would add complexity to save nothing.
+
+**S4, S6 and S7. Accepted.**
+
+**S5. Accepted.** The widened-window probe proved the ordering matters, and the dispatcher's comment records why. Pinning it permanently would need a test-only hook inside the dispatcher, which isn't worth its cost for a two-line ordering that is now explained where it lives.
+
+**F379. Fix it soon.** It is the same class as F376: a call's held entry outliving the call. The call already has a timeout, so tie the entry's lifetime to the call. When the call times out or is dropped, remove the entry, and if a `cancel` is warranted, hold it in case `opened` arrives late, as F376's fix does. Then nothing waits on a broker that never answers until the link closes.
