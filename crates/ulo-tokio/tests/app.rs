@@ -11,8 +11,8 @@ use ulo::app::Bound as Serving;
 use ulo::testing::TestApp;
 use ulo::{
     App, AppBuilder, BoxError, BoxFuture, ConnectError, Connected, DrainToken, FailureReason, LookupError, Module,
-    ModuleDef, ModuleIdentity, Mounted, Runtime, RuntimeMissing, Server, Signal, StartupError, TaskEnd, Timer, Transport,
-    WiringError,
+    ModuleDef, ModuleIdentity, Mounted, Runtime, RuntimeMissing, Secret, Server, Signal, StartupError, TaskEnd, Timer,
+    Transport, WiringError,
 };
 use ulo_tokio::Tokio;
 
@@ -100,11 +100,11 @@ async fn assert_spawns_on_the_runtime_and_times_with_the_timer(app: App<Connecte
     let slept = tokio::time::timeout(PATIENCE, runtime.sleep(Duration::from_secs(3600))).await;
     assert!(slept.is_ok(), "`Dep<dyn Runtime>` slept an hour on the runtime's own clock, not the timer's");
     let task = tokio::time::timeout(PATIENCE, runtime.spawn(Box::pin(async {}))).await;
-    assert!(matches!(task, Ok(TaskEnd::Finished)), "a task spawned through `Dep<dyn Runtime>` ended {task:?}");
+    assert!(task.as_ref().is_ok_and(TaskEnd::is_finished), "a task spawned through `Dep<dyn Runtime>` ended {task:?}");
     app.close(Signal::new("test")).await.expect("the app did not close");
 }
 
-/// `.timer(t).runtime(r)`: `r` for both, one object.
+/// `.timer(t).runtime(r)`: the app's wrapper around `r` for both, one object.
 async fn assert_one_object_on_the_runtime(app: App<Connected>, at: Instant) {
     let runtime = app.get::<dyn Runtime>().await.expect("`Dep<dyn Runtime>` after `.runtime(..)`");
     let timer = app.get::<dyn Timer>().await.expect("`Dep<dyn Timer>` after `.runtime(..)`");
@@ -113,6 +113,36 @@ async fn assert_one_object_on_the_runtime(app: App<Connected>, at: Instant) {
     let handle = app.handle();
     assert_eq!(handle.timer().map(|timer| address(&**timer)), Some(address(&*runtime)), "`AppHandle::timer`");
     assert_eq!(handle.runtime().map(|runtime| address(&**runtime)), Some(address(&*runtime)), "`AppHandle::runtime`");
+    app.close(Signal::new("test")).await.expect("the app did not close");
+}
+
+/// A lazily loaded module registering a secret, and nothing else.
+struct Lazy(Secret<String>);
+
+impl Module for Lazy {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<Self>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        m.secret(&self.0);
+    }
+}
+
+/// The app's runtime redacts with the graph a `load` publishes, so a secret registered after
+/// startup is replaced in the panic of a task spawned through it.
+#[tokio::test]
+async fn a_secret_a_loaded_module_registers_is_redacted_from_a_task_s_panic() {
+    let app = connect(App::builder(Empty).runtime(Tokio::current())).await;
+    let handle = app.handle();
+    handle.load(Lazy(Secret::new("loaded-token-91c2".to_owned()))).await.expect("a module registering a secret did not load");
+    let runtime = Arc::clone(handle.runtime().expect("`AppHandle::runtime` on an app given a runtime"));
+    let task = runtime.spawn(Box::pin(async { panic!("a deliberate panic carrying loaded-token-91c2") }));
+    let end = tokio::time::timeout(PATIENCE, task).await.expect("a task that panics did not end");
+    let TaskEnd::Panicked(message) = &end else {
+        panic!("a task that panicked ended {end:?}");
+    };
+    assert_eq!(message.to_string(), "a deliberate panic carrying [redacted]", "the secret the loaded module registered");
     app.close(Signal::new("test")).await.expect("the app did not close");
 }
 

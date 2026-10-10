@@ -7,11 +7,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use ulo::app::Connected;
 use ulo::{App, AppHandle, BoundAddr, Runtime, Signal, TaskHandle, Timer};
 
 use crate::app::{Probe, SuiteModule, within};
 use crate::client::{Answer, Conn, Request, read_answer, write};
-use crate::{DRAIN, Host, report};
+use crate::{DRAIN, Host, Serving, report};
 
 pub mod close_codes;
 pub mod handshake;
@@ -35,33 +36,36 @@ pub(crate) struct Served<H: Host> {
     host: H,
 }
 
+/// The suite's app on `H`'s runtime with its gateways on `H::PORT`, connected and not yet bound.
+pub(crate) async fn suite_app<H: Host>(probe: &Probe) -> App<Connected> {
+    App::builder(SuiteModule { probe: probe.clone(), port: H::PORT })
+        .runtime(H::runtime())
+        .drain_timeout(DRAIN)
+        .wire()
+        .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not wire: {}", report(&error)))
+        .connect()
+        .await
+        .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not connect: {}", report(&error)))
+}
+
 impl<H: Host> Served<H> {
-    /// The suite's app on `H`'s runtime, bound through `H::bind`, listening and served.
+    /// The suite's app on `H`'s runtime, bound through `H::bind`, listening, and served through
+    /// `H::serve`.
     pub(crate) async fn start() -> Self {
         let probe = Probe::new();
-        let app = App::builder(SuiteModule { probe: probe.clone(), port: H::PORT })
-            .runtime(H::runtime())
-            .drain_timeout(DRAIN)
-            .wire()
-            .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not wire: {}", report(&error)))
-            .connect()
-            .await
-            .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not connect: {}", report(&error)));
-        let (app, host) = H::bind(app);
+        let (app, host) = H::bind(suite_app::<H>(&probe).await);
         let app = app
             .listen()
             .await
             .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not listen: {}", report(&error)));
-        let addresses = app.addresses();
-        if addresses.is_empty() {
-            crate::startup_failed!("the suite's app listened on no address");
-        }
         let handle = app.handle();
         let runtime = Arc::clone(handle.runtime().unwrap_or_else(|| crate::startup_failed!("the suite's app has no runtime")));
         let timer = Arc::clone(&runtime) as Arc<dyn Timer>;
-        let serving = runtime.spawn(Box::pin(async move {
-            let _ = app.serve(std::future::pending::<Signal>()).await;
-        }));
+        let Serving { addresses, until_closed } = host.serve(app).await;
+        let serving = runtime.spawn(until_closed);
+        if addresses.is_empty() {
+            crate::startup_failed!("the host serves the suite's app on no address");
+        }
         Served { addresses, handle, runtime, timer, probe, serving, host }
     }
 

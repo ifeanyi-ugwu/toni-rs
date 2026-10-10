@@ -50,6 +50,7 @@ pub(crate) struct AppShared {
 
 impl AppShared {
     pub(crate) fn new(graph: Graph, config: AppConfig) -> Arc<Self> {
+        config.redactor.set(&graph.secrets);
         Arc::new(AppShared {
             graph: RwLock::new(Arc::new(graph)),
             config,
@@ -67,6 +68,13 @@ impl AppShared {
     pub(crate) fn graph(&self) -> Arc<Graph> {
         let graph = self.graph.read().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(&*graph)
+    }
+
+    /// Makes `graph` the app's, its secrets with it, for the redaction of a task spawned through
+    /// the app's runtime.
+    pub(crate) fn publish(&self, graph: Arc<Graph>) {
+        self.config.redactor.set(&graph.secrets);
+        *self.graph.write().unwrap_or_else(PoisonError::into_inner) = graph;
     }
 
     pub(crate) fn root(self: &Arc<Self>) -> ModuleRef {

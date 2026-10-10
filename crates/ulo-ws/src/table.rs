@@ -24,6 +24,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use http::StatusCode;
 use http::request::Parts;
@@ -50,9 +51,34 @@ pub struct GatewayDefaults {
     pub(crate) max_outbound: Count,
     pub(crate) ping_interval: Bound,
     pub(crate) pong_timeout: Bound,
+    pub(crate) messages_read: MessagesRead,
+}
+
+/// How many data messages a table's connections have read off their sockets, a Text or Binary
+/// message counted as it is read, before it is handled or waits for a place. Every clone reads the
+/// same count. Under `server_max_inflight` it shows the connections stop reading: once every place
+/// is taken it rises by at most one message per connection.
+#[derive(Clone, Debug, Default)]
+pub struct MessagesRead(Arc<AtomicUsize>);
+
+impl MessagesRead {
+    pub fn get(&self) -> usize {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn add(&self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 impl GatewayDefaults {
+    /// The count of data messages read by the connections of the table these defaults build,
+    /// shared with every clone of them. A server holding them hands it out before it moves into
+    /// the app.
+    pub fn messages_read(&self) -> MessagesRead {
+        self.messages_read.clone()
+    }
+
     /// Bytes per message after reassembly: 64 MiB at the default. Zero is refused in `prepare`.
     pub fn message_limit(mut self, bytes: u64) -> Self {
         self.message_limit = Some(bytes);
@@ -153,7 +179,7 @@ impl GatewayTable {
         GatewayTable::new(gateways, hub, mounted.app().clone(), Arc::clone(mounted.runtime()), defaults)
     }
 
-    /// `defaults` gives the table its `server_max_inflight`.
+    /// `defaults` gives the table its `server_max_inflight` and the count of messages read.
     pub(crate) fn new(
         gateways: Vec<Arc<GatewayRuntime>>,
         hub: Arc<Hub>,
@@ -162,7 +188,7 @@ impl GatewayTable {
         defaults: &GatewayDefaults,
     ) -> Self {
         hub.record_gateways(&gateways);
-        let tracker = Tracker::new(defaults.server_max_inflight.max_inflight());
+        let tracker = Tracker::new(defaults.server_max_inflight.max_inflight(), defaults.messages_read.clone());
         GatewayTable { inner: Arc::new(Inner { gateways, hub, app, runtime, tracker }) }
     }
 

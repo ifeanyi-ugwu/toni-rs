@@ -12,7 +12,7 @@ use std::any::Any;
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::timer::BoxError;
 
@@ -38,16 +38,6 @@ impl Redacted {
 
     pub(crate) fn from_parts(inner: BoxError, text: String) -> Self {
         Redacted { inner, text }
-    }
-
-    /// A second `Redacted` over the same panic message, for an answer given more than once. Only
-    /// a panic's message can be copied; anything else is copied as its redacted text.
-    pub(crate) fn copy_panic(&self) -> Redacted {
-        let message = match self.inner.downcast_ref::<PanicMessage>() {
-            Some(PanicMessage(message)) => message.clone(),
-            None => self.text.clone(),
-        };
-        Redacted::from_parts(Box::new(PanicMessage(message)), self.text.clone())
     }
 }
 
@@ -178,6 +168,24 @@ impl SecretRegistry {
             rest = chars.as_str();
         }
         out
+    }
+}
+
+/// The secrets of the graph an app serves, for a value made before the graph exists that redacts
+/// on its behalf: the app's runtime, which redacts the panic of a task spawned through it. The app
+/// sets it from the graph `wire` built and again from each graph a `load` publishes.
+#[derive(Clone, Default)]
+pub(crate) struct Redactor(Arc<RwLock<Arc<SecretRegistry>>>);
+
+impl Redactor {
+    pub(crate) fn set(&self, secrets: &SecretRegistry) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(secrets.clone());
+    }
+
+    /// [`redact_panic`] with the secrets set last.
+    pub(crate) fn panic(&self, payload: Box<dyn Any + Send>) -> Redacted {
+        let secrets = Arc::clone(&*self.0.read().unwrap_or_else(PoisonError::into_inner));
+        redact_panic(&secrets, payload)
     }
 }
 

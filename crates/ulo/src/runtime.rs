@@ -5,8 +5,10 @@
 //! A handle means the same on every runtime: dropping it detaches the task, `abort` stops it, and
 //! awaiting it answers a [`TaskEnd`]. A panic is caught inside the task by the core's own wrapper,
 //! so it ends the task as `Panicked`, carrying the panic's message, whether the runtime would have
-//! reported it or re-raised it.
+//! reported it or re-raised it. The app's runtime, `Dep<dyn Runtime>` and `AppHandle::runtime()`,
+//! is the core's wrapper around the one given, which redacts that message with the app's secrets.
 
+use std::any::Any;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -15,7 +17,7 @@ use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
 use crate::lifecycle::run::CatchUnwind;
-use crate::redact::{Redacted, SecretRegistry, redact_panic};
+use crate::redact::{Redacted, Redactor, SecretRegistry, redact_panic};
 use crate::timer::{BoxFuture, Timer};
 
 /// Starts tasks on a runtime's executor. With [`Timer`] it makes a [`Runtime`].
@@ -28,22 +30,25 @@ pub trait Spawn: Send + Sync + 'static {
 
 /// The app's clock and executor in one value, set with `AppBuilder::runtime`. Services read it as
 /// `Dep<dyn Runtime>`, and `Dep<dyn Timer>` resolves to the same object; after a later
-/// `AppBuilder::timer`, `Dep<dyn Runtime>` spawns on the runtime and times with that timer.
-/// Implemented for anything that implements both halves.
+/// `AppBuilder::timer`, `Dep<dyn Runtime>` spawns on the runtime and times with that timer. Either
+/// way the object is the app's wrapper around the runtime given, which redacts a spawned task's
+/// panic with the app's secrets. Implemented for anything that implements both halves.
 pub trait Runtime: Timer + Spawn {}
 
 impl<R: Timer + Spawn + ?Sized> Runtime for R {}
 
-/// A runtime's spawning with another clock: what `Dep<dyn Runtime>` resolves to once
-/// `AppBuilder::timer` has replaced the clock of the runtime set before it.
+/// What `Dep<dyn Runtime>` resolves to: a runtime's spawning with the app's clock, the runtime's own
+/// unless `AppBuilder::timer` replaced it, and the app's redaction for the panic of a task spawned
+/// through it.
 pub(crate) struct Clocked {
     spawner: Arc<dyn Runtime>,
     timer: Arc<dyn Timer>,
+    redactor: Redactor,
 }
 
 impl Clocked {
-    pub(crate) fn new(spawner: Arc<dyn Runtime>, timer: Arc<dyn Timer>) -> Clocked {
-        Clocked { spawner, timer }
+    pub(crate) fn new(spawner: Arc<dyn Runtime>, timer: Arc<dyn Timer>, redactor: Redactor) -> Clocked {
+        Clocked { spawner, timer, redactor }
     }
 }
 
@@ -57,14 +62,18 @@ impl Timer for Clocked {
     }
 }
 
+/// The task's future goes to the runtime under a wrapper of the app's own, which catches a panic
+/// and redacts it with the app's secrets; the handle the runtime answers reads that wrapper's
+/// record. The runtime's wrapper around it then sees the future complete and never a panic.
 impl Spawn for Clocked {
     fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle {
-        self.spawner.spawn(fut)
+        let (launched, recorded) = Launched::new(fut, Some(self.redactor.clone()));
+        self.spawner.spawn(Box::pin(launched)).reading(recorded)
     }
 }
 
-/// How a spawned task ended, as its handle answers it.
-#[derive(Debug)]
+/// How a spawned task ended, as its handle answers it. Cloning shares a panic's message.
+#[derive(Clone, Debug)]
 pub enum TaskEnd {
     /// The future returned.
     Finished,
@@ -73,10 +82,25 @@ pub enum TaskEnd {
     /// leaves the end `Aborted` and is logged at `warn`.
     Aborted,
     /// The future panicked. The panic was caught at the task's boundary and went no further; the
-    /// payload, converted to a message, is redacted as `PanicRecovered`'s is, except that a task is
-    /// spawned outside any graph, so only the userinfo strip applies and no registered secret is
-    /// replaced.
-    Panicked(Redacted),
+    /// payload, converted to a message, is redacted as `PanicRecovered`'s is. A task spawned
+    /// through the app's runtime, `Dep<dyn Runtime>` or `AppHandle::runtime()`, has every secret
+    /// the app registered replaced; one spawned on a runtime outside any app has only the
+    /// userinfo strip.
+    Panicked(Arc<Redacted>),
+}
+
+impl TaskEnd {
+    pub fn is_finished(&self) -> bool {
+        matches!(self, TaskEnd::Finished)
+    }
+
+    pub fn is_aborted(&self) -> bool {
+        matches!(self, TaskEnd::Aborted)
+    }
+
+    pub fn is_panicked(&self) -> bool {
+        matches!(self, TaskEnd::Panicked(_))
+    }
 }
 
 /// A runtime's own handle to one task, boxed inside a [`TaskHandle`]. A runtime adapter
@@ -130,24 +154,8 @@ pub struct TaskHandle {
     task: Mutex<Option<Box<dyn RuntimeTask>>>,
     /// Empty until the wrapper records an end, before the spawned future completes.
     recorded: Arc<Mutex<Option<Recorded>>>,
-    end: Option<Kept>,
-}
-
-/// The end a handle has answered, kept to answer again.
-enum Kept {
-    Finished,
-    Aborted,
-    Panicked(Redacted),
-}
-
-impl Kept {
-    fn answer(&self) -> TaskEnd {
-        match self {
-            Kept::Finished => TaskEnd::Finished,
-            Kept::Aborted => TaskEnd::Aborted,
-            Kept::Panicked(message) => TaskEnd::Panicked(message.copy_panic()),
-        }
-    }
+    /// The end answered, kept to answer again.
+    end: Option<TaskEnd>,
 }
 
 impl TaskHandle {
@@ -161,10 +169,16 @@ impl TaskHandle {
         T: RuntimeTask,
         S: FnOnce(BoxFuture<'static, ()>) -> T,
     {
-        let recorded = Arc::new(Mutex::new(None));
-        let launched = Launched { fut: Some(CatchUnwind::boxed(fut)), record: Arc::clone(&recorded) };
+        let (launched, recorded) = Launched::new(fut, None);
         let task = start(Box::pin(launched));
         TaskHandle { task: Mutex::new(Some(Box::new(task))), recorded, end: None }
+    }
+
+    /// The handle reading `recorded`, the record of a wrapper inside the future the runtime was
+    /// given, in place of the record of the runtime's own wrapper around it.
+    fn reading(mut self, recorded: Arc<Mutex<Option<Recorded>>>) -> TaskHandle {
+        self.recorded = recorded;
+        self
     }
 
     /// Asks the task to stop at its current await. The handle then answers `Aborted`, unless the
@@ -185,18 +199,18 @@ impl Future for TaskHandle {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<TaskEnd> {
         let this = self.get_mut();
         if let Some(end) = &this.end {
-            return Poll::Ready(end.answer());
+            return Poll::Ready(end.clone());
         }
         let task = this.task.get_mut().unwrap_or_else(PoisonError::into_inner);
         if let Some(task) = task.as_mut() {
             ready!(task.poll_ended(cx));
         }
         let end = match this.recorded.lock().unwrap_or_else(PoisonError::into_inner).take() {
-            Some(Recorded::Finished) => Kept::Finished,
-            Some(Recorded::Panicked(message)) => Kept::Panicked(message),
-            None => Kept::Aborted,
+            Some(Recorded::Finished) => TaskEnd::Finished,
+            Some(Recorded::Panicked(message)) => TaskEnd::Panicked(Arc::new(message)),
+            None => TaskEnd::Aborted,
         };
-        Poll::Ready(this.end.insert(end).answer())
+        Poll::Ready(this.end.insert(end).clone())
     }
 }
 
@@ -206,6 +220,23 @@ struct Launched {
     /// `None` once it has completed, its future dropped.
     fut: Option<CatchUnwind<dyn Future<Output = ()> + Send>>,
     record: Arc<Mutex<Option<Recorded>>>,
+    /// The app's secrets, for a task spawned through the app's runtime; `None` strips userinfo
+    /// alone.
+    redactor: Option<Redactor>,
+}
+
+impl Launched {
+    fn new(fut: BoxFuture<'static, ()>, redactor: Option<Redactor>) -> (Launched, Arc<Mutex<Option<Recorded>>>) {
+        let recorded = Arc::new(Mutex::new(None));
+        (Launched { fut: Some(CatchUnwind::boxed(fut)), record: Arc::clone(&recorded), redactor }, recorded)
+    }
+}
+
+fn redacted(redactor: Option<&Redactor>, payload: Box<dyn Any + Send>) -> Redacted {
+    match redactor {
+        Some(redactor) => redactor.panic(payload),
+        None => redact_panic(&SecretRegistry::default(), payload),
+    }
 }
 
 impl Future for Launched {
@@ -218,10 +249,10 @@ impl Future for Launched {
         };
         let end = match ready!(Pin::new(fut).poll(cx)) {
             Ok(()) => Recorded::Finished,
-            Err(payload) => Recorded::Panicked(redact_panic(&SecretRegistry::default(), payload)),
+            Err(payload) => Recorded::Panicked(redacted(this.redactor.as_ref(), payload)),
         };
         // Dropped before the end is recorded, so a handle reading the end finds the future gone.
-        drop_caught(this.fut.take(), "after it ended");
+        drop_caught(this.fut.take(), this.redactor.as_ref(), "after it ended");
         *this.record.lock().unwrap_or_else(PoisonError::into_inner) = Some(end);
         Poll::Ready(())
     }
@@ -231,18 +262,18 @@ impl Future for Launched {
 /// so the handle answers `Aborted`.
 impl Drop for Launched {
     fn drop(&mut self) {
-        drop_caught(self.fut.take(), "unfinished, so the task ends `Aborted`");
+        drop_caught(self.fut.take(), self.redactor.as_ref(), "unfinished, so the task ends `Aborted`");
     }
 }
 
 /// Drops a task's future inside `catch_unwind`. A panic there would otherwise reach the runtime:
 /// tokio reports it through a `JoinHandle` the handle does not read, and `async-task`, under smol,
 /// aborts the process.
-fn drop_caught(fut: Option<CatchUnwind<dyn Future<Output = ()> + Send>>, when: &str) {
+fn drop_caught(fut: Option<CatchUnwind<dyn Future<Output = ()> + Send>>, redactor: Option<&Redactor>, when: &str) {
     if let Some(fut) = fut
         && let Err(payload) = catch_unwind(AssertUnwindSafe(move || drop(fut)))
     {
-        let message = redact_panic(&SecretRegistry::default(), payload);
+        let message = redacted(redactor, payload);
         tracing::warn!(%message, "a task's future panicked while it was dropped {when}");
     }
 }

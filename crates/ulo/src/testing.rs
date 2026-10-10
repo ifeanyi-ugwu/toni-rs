@@ -203,7 +203,7 @@ impl<S> TestApp<S> {
 
     /// The clock and executor, as [`AppBuilder::runtime`](crate::AppBuilder::runtime) sets them:
     /// services read it as `Dep<dyn Runtime>`, and as `Dep<dyn Timer>`. It sets both, so
-    /// `.timer(t).runtime(r)` is `r` for both.
+    /// `.timer(t).runtime(r)` spawns and times on `r`.
     pub fn runtime(self, runtime: impl Runtime) -> TestApp<Settled> {
         TestApp { builder: self.builder.runtime(runtime), _s: PhantomData }
     }

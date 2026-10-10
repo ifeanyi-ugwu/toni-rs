@@ -37,4 +37,6 @@ ulo_rpc_conformance::conformance_suite!(Loopback; not_applicable {
     recovery_after_disrupt: "UDP holds no connection to lose",
     cancel_follows_its_request: "datagrams arrive in any order, so a `cancel` may overtake its request",
     cancel_before_opened: "UDP carries no streamed request",
+    a_late_opened_releases_the_held_cancel: "UDP carries no streamed request",
+    a_held_cancel_is_dropped_when_its_hold_runs_out: "UDP carries no streamed request",
 });

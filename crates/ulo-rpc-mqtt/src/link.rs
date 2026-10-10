@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use ulo::{AppHandle, BoxError, BoxFuture};
 use ulo_tokio::Tokio;
+use ulo_rpc::__private::ClientProbe;
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Data, Delivery, DeliveryMode, ErrorBody, Frame, FrameTooLarge, Link,
@@ -73,6 +74,7 @@ pub struct Mqtt {
     /// The CONNACK's Maximum Packet Size, zero until a connection reads one.
     pub(crate) max_packet: Arc<AtomicU64>,
     pub(crate) state: Mutex<State>,
+    pub(crate) probe: Arc<ClientProbe>,
 }
 
 #[derive(Default)]
@@ -94,7 +96,14 @@ impl Mqtt {
             default_group: None,
             max_packet: Arc::new(AtomicU64::new(0)),
             state: Mutex::new(State::default()),
+            probe: Arc::default(),
         }
+    }
+
+    /// The client side as the RPC conformance suite reads it.
+    #[doc(hidden)]
+    pub fn probe(&self) -> &ClientProbe {
+        &self.probe
     }
 
     /// The shared-subscription group server instances share, in place of the root module's full
@@ -240,7 +249,17 @@ impl Link for Mqtt {
             outgoing: Mutex::new(None),
             pkids: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            probe: Arc::clone(&self.probe),
         });
+        let (late, counted) = (Arc::downgrade(&side), Arc::downgrade(&side));
+        self.probe.attach(
+            move |call| {
+                if let Some(side) = late.upgrade() {
+                    side.open_gate(call);
+                }
+            },
+            move || counted.upgrade().map_or(0, |side| lock(&side.calls).len()),
+        );
         let (frames, replies) = mpsc::unbounded_channel();
         let (ready, subscribed) = oneshot::channel();
         let task = runtime.handle().spawn(client_loop(Arc::clone(&side), eventloop, frames, ready));
@@ -805,6 +824,7 @@ struct ClientSide {
     pkids: Mutex<HashMap<u16, u64>>,
     /// Set by `close` before it queues the DISCONNECT, so the event loop ends on writing it.
     closed: AtomicBool,
+    probe: Arc<ClientProbe>,
 }
 
 /// A publish waiting for its `Outgoing::Publish` event.
@@ -821,8 +841,8 @@ enum ClientCall {
     Streaming { pattern: Pattern, gate: Option<oneshot::Sender<()>>, queue: mpsc::UnboundedSender<Frame> },
     /// A streamed request cancelled before the server acknowledged its `open`: its `cancel` waits
     /// in the pump's queue and goes out alone once the acknowledgment opens `gate`, the frames
-    /// queued before it dropped. The entry stays until then, or until the link closes when no
-    /// acknowledgment comes.
+    /// queued before it dropped. The entry stays until then, or until the hold (`CANCEL_HOLD`)
+    /// runs out, when dropping it closes `gate` and the pump ends.
     Cancelled { pattern: Pattern, gate: oneshot::Sender<()> },
 }
 
@@ -883,6 +903,7 @@ impl ClientSide {
                         Some(ClientCall::Streaming { pattern, gate: Some(gate), queue }) => {
                             let _ = queue.send(Frame::Cancel { id });
                             calls.insert(id, ClientCall::Cancelled { pattern, gate });
+                            self.expire_cancelled(id);
                             false
                         }
                         Some(ClientCall::Streaming { gate: None, queue, .. }) => {
@@ -958,6 +979,21 @@ impl ClientSide {
         if let Some(ClientCall::Streaming { queue, .. }) = lock(&self.calls).get(&id) {
             let _ = queue.send(frame);
         }
+    }
+
+    /// Drops call `id`'s held `cancel` once the hold runs out, if no `opened` released it first.
+    fn expire_cancelled(self: &Arc<Self>, id: u64) {
+        let side = Arc::downgrade(self);
+        let hold = self.probe.hold();
+        self.runtime.handle().spawn(async move {
+            tokio::time::sleep(hold).await;
+            if let Some(side) = side.upgrade() {
+                let mut calls = lock(&side.calls);
+                if matches!(calls.get(&id), Some(ClientCall::Cancelled { .. })) {
+                    calls.remove(&id);
+                }
+            }
+        });
     }
 
     fn open_gate(&self, id: u64) {
@@ -1040,7 +1076,9 @@ async fn client_loop(
                 let properties = publish.properties.unwrap_or_default();
                 let Some(call) = properties.correlation_data.as_deref().and_then(|data| side.call_of(data)) else { continue };
                 if kind_of(&properties.user_properties).as_deref() == Some(OPENED) {
-                    side.open_gate(call);
+                    if !side.probe.withholds(call) {
+                        side.open_gate(call);
+                    }
                     continue;
                 }
                 let frame = match side.codec.decode_frame(&publish.payload) {

@@ -10,6 +10,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use ulo::{AppHandle, BoxError, BoxFuture};
 use ulo_tokio::Tokio;
+use ulo_rpc::__private::ClientProbe;
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Data, Delivery, DeliveryMode, ErrorBody, Frame, FrameTooLarge, Link,
@@ -56,6 +57,7 @@ pub struct Nats {
     /// The server's `max_payload` from its `INFO`, zero until a connection reads it.
     pub(crate) max_payload: Arc<AtomicU64>,
     pub(crate) state: Mutex<State>,
+    pub(crate) probe: Arc<ClientProbe>,
 }
 
 #[derive(Default)]
@@ -77,7 +79,14 @@ impl Nats {
             default_group: None,
             max_payload: Arc::new(AtomicU64::new(0)),
             state: Mutex::new(State::default()),
+            probe: Arc::default(),
         }
+    }
+
+    /// The client side as the RPC conformance suite reads it.
+    #[doc(hidden)]
+    pub fn probe(&self) -> &ClientProbe {
+        &self.probe
     }
 
     /// The queue group server instances share, in place of the root module's full type path.
@@ -208,7 +217,17 @@ impl Link for Nats {
             prefix,
             max_payload: Arc::clone(&self.max_payload),
             calls: Mutex::new(HashMap::new()),
+            probe: Arc::clone(&self.probe),
         });
+        let (late, counted) = (Arc::downgrade(&side), Arc::downgrade(&side));
+        self.probe.attach(
+            move |call| {
+                if let Some(side) = late.upgrade() {
+                    side.open_gate(call);
+                }
+            },
+            move || counted.upgrade().map_or(0, |side| lock(&side.calls).len()),
+        );
         lock(&self.state).client = Some(client);
         let (frames, replies_out) = mpsc::unbounded_channel();
         runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames, disconnected));
@@ -467,6 +486,7 @@ struct ClientSide {
     prefix: String,
     max_payload: Arc<AtomicU64>,
     calls: Mutex<HashMap<u64, ClientCall>>,
+    probe: Arc<ClientProbe>,
 }
 
 enum ClientCall {
@@ -476,8 +496,8 @@ enum ClientCall {
     Streaming { pattern: Pattern, gate: Option<oneshot::Sender<()>>, queue: mpsc::UnboundedSender<Frame> },
     /// A streamed request cancelled before the server acknowledged its `open`: its `cancel` waits
     /// in the pump's queue and goes out alone once the acknowledgment opens `gate`, the frames
-    /// queued before it dropped. The entry stays until then, or until the link closes when no
-    /// acknowledgment comes.
+    /// queued before it dropped. The entry stays until then, or until the hold (`CANCEL_HOLD`)
+    /// runs out, when dropping it closes `gate` and the pump ends.
     Cancelled { pattern: Pattern, gate: oneshot::Sender<()> },
 }
 
@@ -490,7 +510,7 @@ impl ClientCall {
 }
 
 impl ClientSide {
-    async fn send(&self, pattern: Pattern, frame: Frame) -> Result<(), BoxError> {
+    async fn send(self: &Arc<Self>, pattern: Pattern, frame: Frame) -> Result<(), BoxError> {
         match frame {
             Frame::Req { id, headers, data, .. } => {
                 self.fits(data.len())?;
@@ -535,6 +555,7 @@ impl ClientSide {
                         Some(ClientCall::Streaming { pattern, gate: Some(gate), queue }) => {
                             let _ = queue.send(Frame::Cancel { id });
                             calls.insert(id, ClientCall::Cancelled { pattern, gate });
+                            self.expire_cancelled(id);
                             false
                         }
                         Some(ClientCall::Streaming { gate: None, queue, .. }) => {
@@ -552,6 +573,21 @@ impl ClientSide {
             }
             other => Err(format!("a client does not send a `{}` frame", other.kind()).into()),
         }
+    }
+
+    /// Drops call `id`'s held `cancel` once the hold runs out, if no `opened` released it first.
+    fn expire_cancelled(self: &Arc<Self>, id: u64) {
+        let side = Arc::downgrade(self);
+        let hold = self.probe.hold();
+        self.runtime.handle().spawn(async move {
+            tokio::time::sleep(hold).await;
+            if let Some(side) = side.upgrade() {
+                let mut calls = lock(&side.calls);
+                if matches!(calls.get(&id), Some(ClientCall::Cancelled { .. })) {
+                    calls.remove(&id);
+                }
+            }
+        });
     }
 
     fn reply_subject(&self, id: u64) -> String {
@@ -626,7 +662,9 @@ async fn route_replies(
             continue;
         }
         if kind_of(message.headers.as_ref()).as_deref() == Some(OPENED) {
-            side.open_gate(id);
+            if !side.probe.withholds(id) {
+                side.open_gate(id);
+            }
             continue;
         }
         let frame = match side.codec.decode_frame(&message.payload) {

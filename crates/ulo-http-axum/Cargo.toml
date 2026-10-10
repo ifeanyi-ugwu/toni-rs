@@ -23,10 +23,8 @@ tower.workspace = true
 
 [dev-dependencies]
 ulo-http-conformance = { path = "../ulo-http-conformance" }
-# `tests/websocket.rs`: a gateway reached through `WsModule`'s hand-off inside axum.
+# `tests/ws_conformance.rs`: the WebSocket suite against `WsModule`'s hand-off inside axum.
+ulo-ws-conformance = { path = "../ulo-ws-conformance" }
 ulo-tokio = { path = "../ulo-tokio" }
 ulo-ws = { path = "../ulo-ws" }
-futures-util.workspace = true
-serde_json.workspace = true
-tokio-tungstenite = { workspace = true, features = ["handshake"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }

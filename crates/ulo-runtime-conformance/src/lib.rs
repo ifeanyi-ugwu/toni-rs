@@ -1,8 +1,9 @@
 //! The conformance suite every `ulo` runtime runs: what a [`TaskHandle`](ulo::TaskHandle) answers
 //! after a return, an abort, a panic and a drop, what [`spawn_with`](ulo::spawn_with) and a
 //! [`TaskSet`](ulo_transport::TaskSet) answer over it, and the app binding the runtime as one
-//! object. One scenario list, stamped per runtime by [`runtime_suite!`] from a [`Harness`] the
-//! runtime crate implements in its `tests/`.
+//! object that redacts a spawned task's panic with the app's secrets. One scenario list, stamped
+//! per runtime by [`runtime_suite!`] from a [`Harness`] the runtime crate implements in its
+//! `tests/`.
 //!
 //! ```ignore
 //! // crates/ulo-tokio/tests/conformance.rs
@@ -22,8 +23,9 @@
 //! [`cases::PATIENCE`] instead of hanging it. A scenario that observes a panic causes one inside a
 //! task, and the panic hook prints it to stderr while the scenario passes.
 //!
-//! The scenario reading the core's `warn` installs a recording `tracing` subscriber as the global
-//! default, once per test binary, so a runtime crate's harness installs none of its own.
+//! The two scenarios reading the core's `warn` install a recording `tracing` subscriber as the
+//! global default, once per test binary, so a runtime crate's harness installs none of its own. In
+//! a binary that installed one first they fail with [`cases::SUBSCRIBER_TAKEN`].
 
 use std::future::Future;
 
@@ -63,6 +65,7 @@ macro_rules! runtime_suite {
             join_all_returns_once_every_task_has_ended => set::join_all,
             a_dropped_set_aborts_its_tasks => set::dropped,
             the_app_binds_the_runtime_as_one_object => app::one_object,
+            a_task_spawned_through_the_app_redacts_its_secrets => app::redacted,
         );
     };
     (@cases $harness:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {

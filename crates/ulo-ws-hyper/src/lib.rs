@@ -29,7 +29,7 @@ use ulo_net::rustls::ServerConfig;
 use ulo_net::{Activation, ActivationError, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::Count;
 use ulo_transport::prepare::{Failures, zero_bound};
-use ulo_ws::{GatewayDefaults, GatewayTable, Handshake, Ws};
+use ulo_ws::{GatewayDefaults, GatewayTable, Handshake, MessagesRead, Ws};
 
 /// The name a refusal in `prepare` gives the server.
 const NAME: &str = "ulo_ws_hyper::Server";
@@ -96,6 +96,14 @@ impl Server {
     /// endpoint.
     pub fn read_count(&self) -> ReadCount {
         self.read_count.clone()
+    }
+
+    /// How many data messages the server's connections have read off their sockets, through a
+    /// clone taken before the server moves into the app. Once every place under
+    /// [`server_max_inflight`](Self::server_max_inflight) is taken it rises by at most one message
+    /// per connection, the connections having stopped reading.
+    pub fn messages_read(&self) -> MessagesRead {
+        self.defaults.messages_read()
     }
 
     /// One more endpoint the same server listens on.

@@ -6370,6 +6370,7 @@ dependencies = [
  "ulo-http-conformance",
  "ulo-tokio",
  "ulo-ws",
+ "ulo-ws-conformance",
 ]
 
 [[package]]
@@ -6377,19 +6378,17 @@ name = "ulo-http-axum"
 version = "0.1.0"
 dependencies = [
  "axum",
- "futures-util",
  "http 1.5.0",
  "hyper 1.11.1",
  "hyper-util",
- "serde_json",
  "tokio",
- "tokio-tungstenite",
  "tower",
  "ulo",
  "ulo-http",
  "ulo-http-conformance",
  "ulo-tokio",
  "ulo-ws",
+ "ulo-ws-conformance",
 ]
 
 [[package]]
@@ -6455,6 +6454,9 @@ dependencies = [
  "ulo",
  "ulo-http",
  "ulo-http-conformance",
+ "ulo-tokio",
+ "ulo-ws",
+ "ulo-ws-conformance",
 ]
 
 [[package]]
@@ -6471,6 +6473,9 @@ dependencies = [
  "ulo",
  "ulo-http",
  "ulo-http-conformance",
+ "ulo-tokio",
+ "ulo-ws",
+ "ulo-ws-conformance",
 ]
 
 [[package]]
@@ -6487,6 +6492,9 @@ dependencies = [
  "ulo",
  "ulo-http",
  "ulo-http-conformance",
+ "ulo-tokio",
+ "ulo-ws",
+ "ulo-ws-conformance",
 ]
 
 [[package]]
@@ -6761,6 +6769,7 @@ version = "0.1.0"
 dependencies = [
  "futures-executor",
  "tokio",
+ "tracing",
  "ulo",
  "ulo-runtime-conformance",
 ]

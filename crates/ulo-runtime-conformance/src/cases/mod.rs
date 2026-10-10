@@ -63,8 +63,9 @@ const DROP_PANIC_MESSAGE: &str = "ulo-runtime-conformance: a deliberate panic wh
 
 /// `end` is `Panicked` with [`PANIC_MESSAGE`], its password redacted.
 fn assert_panicked_with_the_message(end: &TaskEnd) {
+    assert!(end.is_panicked(), "a task whose future panicked ended {end:?}");
     let TaskEnd::Panicked(message) = end else {
-        panic!("a task whose future panicked ended {end:?}");
+        unreachable!("`is_panicked` answered `true` for {end:?}");
     };
     let text = message.to_string();
     assert!(
@@ -74,6 +75,10 @@ fn assert_panicked_with_the_message(end: &TaskEnd) {
     assert!(!text.contains("hunter2"), "the panic's message arrived unredacted: {text:?}");
 }
 
+/// What a scenario reading the core's `warn` fails with when the test binary set a global
+/// `tracing` subscriber before the suite could.
+pub const SUBSCRIBER_TAKEN: &str = "the test binary installed its own subscriber, so this scenario can't capture the warning";
+
 /// The process's global `tracing` subscriber while the suite runs, keeping every `warn` and
 /// `error` event's level and fields. A runtime drops an aborted future on a thread of its own, so
 /// a thread-local subscriber would miss the event.
@@ -82,14 +87,16 @@ struct Recorder {
 }
 
 impl Recorder {
-    /// The recorder, installed as the global default on first use. Fails the scenario when another
-    /// global subscriber was installed first, since that one would receive the events instead.
+    /// The recorder, installed as the global default on first use. Fails the scenario with
+    /// [`SUBSCRIBER_TAKEN`] when another global subscriber was installed first, since that one
+    /// would receive the events instead.
     fn installed() -> &'static Recorder {
         static RECORDER: OnceLock<&'static Recorder> = OnceLock::new();
         RECORDER.get_or_init(|| {
             let recorder: &'static Recorder = Box::leak(Box::new(Recorder { events: Mutex::new(Vec::new()) }));
-            tracing::subscriber::set_global_default(Forward(recorder))
-                .expect("another global `tracing` subscriber was installed before the suite's");
+            if tracing::subscriber::set_global_default(Forward(recorder)).is_err() {
+                panic!("{SUBSCRIBER_TAKEN}");
+            }
             recorder
         })
     }

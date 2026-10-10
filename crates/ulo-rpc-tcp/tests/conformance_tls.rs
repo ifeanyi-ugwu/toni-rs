@@ -117,4 +117,7 @@ async fn bridge(listener: TcpListener, upstream: Arc<OnceLock<SocketAddr>>, conn
     }
 }
 
-ulo_rpc_conformance::conformance_suite!(TlsLoopback);
+ulo_rpc_conformance::conformance_suite!(TlsLoopback; not_applicable {
+    a_late_opened_releases_the_held_cancel: "U17: a request and its control frames share one ordered lane, so the link holds no `cancel` for an `opened`",
+    a_held_cancel_is_dropped_when_its_hold_runs_out: "U17: a request and its control frames share one ordered lane, so the link holds no `cancel` for an `opened`",
+});

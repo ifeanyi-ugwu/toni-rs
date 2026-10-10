@@ -1,7 +1,9 @@
 //! The conformance suite every `ulo-ws` server runs (transports DESIGN §3.5, §4): one scenario
 //! list, stamped per server by [`ws_conformance_suite!`] from a [`Host`] the server's crate
 //! implements in its `tests/`. `ulo-ws-hyper`'s standalone server is the reference; the upgrade
-//! hand-off on the HTTP server's port runs the same list.
+//! hand-off on the HTTP server's port runs the same list, served by `ulo-http-hyper` and inside
+//! each framework an `Embed` adapter hosts the app in, which serves the app on its own listener
+//! through [`Host::serve`].
 //!
 //! ```ignore
 //! // crates/ulo-ws-hyper/tests/conformance.rs
@@ -12,6 +14,7 @@
 //!     type Stream = ulo_http::Upgraded;
 //!     const PORT: ulo_ws::Port = ulo_ws::Port::Own;
 //!     const CLOSES_IDLE_AT_DRAIN: bool = true; // hyper's graceful shutdown
+//!     fn upgrades() -> bool { true }
 //!     fn runtime() -> ulo_tokio::Tokio { ulo_tokio::Tokio::current() }
 //!     fn block_on<F: Future>(fut: F) -> F::Output { /* a runtime of its own per scenario */ }
 //!     fn bind(app: App<Connected>) -> (App<Connected>, Self) {
@@ -57,8 +60,8 @@ use std::io;
 use std::time::Duration;
 
 use futures_io::{AsyncRead, AsyncWrite};
-use ulo::app::Connected;
-use ulo::{App, BoundAddr, Runtime};
+use ulo::app::{Bound, Connected};
+use ulo::{App, BoundAddr, BoxFuture, Runtime, Signal};
 use ulo_ws::Port;
 
 mod app;
@@ -82,10 +85,11 @@ pub const PARALLEL_VAR: &str = "ULO_CONFORMANCE_PARALLEL";
 /// One WebSocket server as the suite drives it.
 ///
 /// Each scenario builds its own app, binds it through [`bind`], which hands back the host value
-/// that scenario reads the server through, and connects through [`connect`] to the addresses the
-/// app's `listen()` reported.
+/// that scenario reads the server through, runs `listen()`, serves the app through [`serve`], and
+/// connects through [`connect`] to the addresses `serve` answered.
 ///
 /// [`bind`]: Host::bind
+/// [`serve`]: Host::serve
 /// [`connect`]: Host::connect
 pub trait Host: Sized + 'static {
     /// The app's runtime, on which the server's connections and the scenario's own waits run.
@@ -106,6 +110,17 @@ pub trait Host: Sized + 'static {
     /// a host keeping it, an upgrade request sent on it during the drain must be answered 503; on
     /// one closing it, the connection must end with nothing written.
     const CLOSES_IDLE_AT_DRAIN: bool = false;
+
+    /// Whether the server hands a gateway on its port the connection a 101 upgrades: `true` for
+    /// the standalone server and an HTTP server serving the hand-off, and for an `Embed` host what
+    /// its adapter's `EmbedLimits::upgrades` declares.
+    ///
+    /// `handshake_upgrades_as_the_host_declares` asserts it both ways: on a host declaring it, an
+    /// upgrade to a gateway switches protocols and its message is answered; on one declaring none,
+    /// `listen()` refuses the suite's app, which serves gateways on the host's port, naming the
+    /// declaration. A host declaring none stamps the suite with `without_upgrades`, under which
+    /// every other scenario is not applicable.
+    fn upgrades() -> bool;
 
     /// A runtime value; each scenario takes its own, built inside the future [`block_on`] runs, so
     /// a runtime that captures the executor it runs on finds it.
@@ -136,9 +151,31 @@ pub trait Host: Sized + 'static {
     /// count.
     fn connections_read(&self) -> Option<usize>;
 
-    /// Opens a connection to the server: `addresses` holds every address the app bound,
-    /// `App<Bound>::addresses()` in the order the servers started.
+    /// Serves `app`, which has listened, until it closes, and answers where a client reaches it.
+    ///
+    /// The default is for a server the app binds: the addresses `App<Bound>::addresses()` reports,
+    /// in the order the servers started, and `App::serve` until a close. An `Embed` host binds its
+    /// own listener here, answers that listener's address and serves through its adapter's `run`,
+    /// which owns the host's server and the app's shutdown together.
+    fn serve(&self, app: App<Bound>) -> impl Future<Output = Serving> {
+        let addresses = app.addresses();
+        let until_closed: BoxFuture<'static, ()> = Box::pin(async move {
+            let _ = app.serve(std::future::pending::<Signal>()).await;
+        });
+        std::future::ready(Serving { addresses, until_closed })
+    }
+
+    /// Opens a connection to the server: `addresses` holds what [`serve`](Host::serve) answered.
     fn connect(addresses: &[BoundAddr]) -> impl Future<Output = io::Result<Self::Stream>>;
+}
+
+/// Where a client reaches a served app, and the serving, as [`Host::serve`] answers them.
+pub struct Serving {
+    /// Every address a client may connect to, the first the one a request's `Host` header names.
+    pub addresses: Vec<BoundAddr>,
+    /// Ends once the app's serving has ended, after a close; the suite runs it on the app's
+    /// runtime and awaits it when it stops the app.
+    pub until_closed: BoxFuture<'static, ()>,
 }
 
 /// `error` and every source under it, joined by `: `, for a failure message: a scenario that fails
@@ -185,10 +222,22 @@ macro_rules! startup_failed {
 /// A declared name that is no scenario fails to compile. A scenario run on a host it does not apply
 /// to fails rather than passing, so a host leaving out a declaration it needs fails too;
 /// `cargo test -- --ignored` runs the declared ones, which then fail the same way.
+///
+/// A host whose [`Host::upgrades`] declares none is stamped `without_upgrades`: it runs
+/// `handshake_upgrades_as_the_host_declares`, which requires that declaration and `listen()`'s
+/// refusal of the suite's app, and every other scenario is not applicable, since no gateway is
+/// served on its port:
+///
+/// ```ignore
+/// ulo_ws_conformance::ws_conformance_suite!(ActixHost; without_upgrades);
+/// ```
 #[macro_export]
 macro_rules! ws_conformance_suite {
     ($host:ty $(,)?) => {
         $crate::ws_conformance_suite!($host; not_applicable {});
+    };
+    ($host:ty; without_upgrades $(,)?) => {
+        $crate::ws_conformance_suite!(@without_upgrades [$] $host);
     };
     ($host:ty; not_applicable { $($skip:ident : $why:literal),* $(,)? } $(,)?) => {
         $crate::ws_conformance_suite!(@stamper [$] $host; $($skip : $why),*);
@@ -209,10 +258,31 @@ macro_rules! ws_conformance_suite {
         }
         // A declared name that is no scenario names no function here.
         $(const _: fn() = $skip;)*
+        $crate::ws_conformance_suite!(@list $host);
+    };
+    (@without_upgrades [$d:tt] $host:ty) => {
+        macro_rules! __ulo_ws_conformance_stamp {
+            (handshake_upgrades_as_the_host_declares, $d($d test:tt)*) => {
+                #[test]
+                fn handshake_upgrades_as_the_host_declares() {
+                    <$host as $crate::Host>::block_on($crate::cases::handshake::without_upgrades::<$host>());
+                }
+            };
+            ($d other:ident, $d($d test:tt)*) => {
+                #[test]
+                #[ignore = "not applicable: the host declares no upgrades, so it serves no gateway on its port"]
+                $d($d test)*
+            };
+        }
+        $crate::ws_conformance_suite!(@list $host);
+    };
+    (@list $host:ty) => {
         $crate::ws_conformance_suite!(@cases $host;
+            handshake_upgrades_as_the_host_declares => handshake::as_declared,
             handshake_switches_with_the_accept_key => handshake::switches,
             handshake_refuses_a_path_without_a_gateway => handshake::no_gateway,
             handshake_refuses_a_method_other_than_get => handshake::method,
+            handshake_refuses_http_1_0 => handshake::http_1_0,
             handshake_refuses_a_malformed_upgrade => handshake::malformed,
             handshake_refuses_another_version => handshake::version,
             handshake_refuses_during_the_drain => handshake::draining,

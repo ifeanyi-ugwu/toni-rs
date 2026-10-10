@@ -42,4 +42,7 @@ impl Broker for Loopback {
     }
 }
 
-ulo_rpc_conformance::conformance_suite!(Loopback);
+ulo_rpc_conformance::conformance_suite!(Loopback; not_applicable {
+    a_late_opened_releases_the_held_cancel: "U17: a request and its control frames share one ordered lane, so the link holds no `cancel` for an `opened`",
+    a_held_cancel_is_dropped_when_its_hold_runs_out: "U17: a request and its control frames share one ordered lane, so the link holds no `cancel` for an `opened`",
+});

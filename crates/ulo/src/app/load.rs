@@ -6,7 +6,7 @@
 //! collection the module does not introduce (whatever reads it as `Many<T>` may already have),
 //! global exports, and execution inputs (the per-handler input check ran at wiring time).
 
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 
 use crate::app::shared::AppShared;
 use crate::error::{Closed, LoadError};
@@ -55,10 +55,10 @@ pub(crate) async fn load(shared: &Arc<AppShared>, module: Box<dyn Module>) -> Re
     // Published before the connect walk: its constructors resolve through the app's graph. No
     // module of the base graph sees the new bindings, since a lazy module exports nothing
     // globally and contributes to no collection it does not introduce.
-    *shared.graph.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(graph);
+    shared.publish(Arc::new(graph));
 
     if let Err(failure) = connect::connect(shared, &singletons, &modules).await {
-        *shared.graph.write().unwrap_or_else(PoisonError::into_inner) = base;
+        shared.publish(base);
         for id in &singletons {
             shared.singletons.remove(*id);
         }

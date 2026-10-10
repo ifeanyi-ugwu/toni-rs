@@ -18,6 +18,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use ulo::{AppHandle, BoxError, BoxFuture};
 use ulo_tokio::Tokio;
+use ulo_rpc::__private::ClientProbe;
 use ulo_rpc::link::Inbound;
 use ulo_transport::__private::ordered;
 use ulo_transport::Count;
@@ -72,6 +73,7 @@ pub struct RabbitMq {
     pub(crate) prefetch: u16,
     pub(crate) runtime: Option<Tokio>,
     pub(crate) state: Mutex<State>,
+    pub(crate) probe: Arc<ClientProbe>,
 }
 
 #[derive(Default)]
@@ -90,7 +92,14 @@ impl RabbitMq {
             prefetch: UNLIMITED_PREFETCH,
             runtime: Tokio::try_current(),
             state: Mutex::new(State::default()),
+            probe: Arc::default(),
         }
+    }
+
+    /// The client side as the RPC conformance suite reads it.
+    #[doc(hidden)]
+    pub fn probe(&self) -> &ClientProbe {
+        &self.probe
     }
 
     /// `Codec::Cbor` carries raw bytes and declares `binary: true`; JSON unset.
@@ -221,9 +230,17 @@ impl Link for RabbitMq {
             codec: self.codec,
             id: uuid::Uuid::new_v4().simple().to_string(),
             calls: Mutex::new(HashMap::new()),
+            runtime: runtime.clone(),
+            probe: Arc::clone(&self.probe),
         });
         lock(&self.state).client = Some((connection, runtime.clone()));
         let (writes, queued) = ordered::channel(WRITE_QUEUE);
+        let late = writes.clone();
+        let counted = Arc::downgrade(&side);
+        self.probe.attach(
+            move |call| drop(late.send(Job::Opened(call))),
+            move || counted.upgrade().map_or(0, |side| lock(&side.calls).len()),
+        );
         runtime.handle().spawn(client_writer(Arc::clone(&side), queued));
         let (frames, replies_out) = mpsc::unbounded_channel();
         runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames, writes.clone()));
@@ -563,6 +580,9 @@ struct ClientSide {
     codec: Codec,
     id: String,
     calls: Mutex<HashMap<u64, ClientCall>>,
+    /// The link's runtime, on which a held `cancel`'s hold runs out.
+    runtime: Tokio,
+    probe: Arc<ClientProbe>,
 }
 
 enum ClientCall {
@@ -571,8 +591,8 @@ enum ClientCall {
     /// wait in `held`, and the writer publishes them in order once it does.
     Streaming { opened: bool, held: VecDeque<Frame> },
     /// A streamed request cancelled before the server acknowledged its `open`: the `cancel` waits
-    /// for the acknowledgment and is published alone, the frames held before it dropped. The entry stays
-    /// until then, or until the link closes when no acknowledgment comes.
+    /// for the acknowledgment and is published alone, the frames held before it dropped. The entry
+    /// stays until then, or until the hold (`CANCEL_HOLD`) runs out, when it is dropped.
     Cancelled,
 }
 
@@ -659,6 +679,7 @@ impl ClientSide {
                     // acknowledges it.
                     Some(ClientCall::Streaming { opened: false, .. }) => {
                         lock(&self.calls).insert(id, ClientCall::Cancelled);
+                        self.expire_cancelled(id);
                         let _ = answer.send(Ok(()));
                     }
                     Some(ClientCall::Cancelled) | None => {
@@ -710,6 +731,21 @@ impl ClientSide {
             }
             let _ = answer.send(outcome);
         }));
+    }
+
+    /// Drops call `id`'s held `cancel` once the hold runs out, if no `opened` released it first.
+    fn expire_cancelled(self: &Arc<Self>, id: u64) {
+        let side = Arc::downgrade(self);
+        let hold = self.probe.hold();
+        self.runtime.handle().spawn(async move {
+            tokio::time::sleep(hold).await;
+            if let Some(side) = side.upgrade() {
+                let mut calls = lock(&side.calls);
+                if matches!(calls.get(&id), Some(ClientCall::Cancelled)) {
+                    calls.remove(&id);
+                }
+            }
+        });
     }
 
     /// A streamed request's `in` or `in_end`: published once the server has acknowledged the
@@ -807,6 +843,9 @@ async fn route_replies(side: Arc<ClientSide>, mut replies: Consumer, frames: mps
         };
         let Some(call) = delivery.properties.correlation_id().as_ref().and_then(|id| side.call_of(id.as_str())) else { continue };
         if kind_of(delivery.properties.headers().as_ref()).as_deref() == Some(OPENED) {
+            if side.probe.withholds(call) {
+                continue;
+            }
             if writes.send(Job::Opened(call)).await.is_err() {
                 break;
             }

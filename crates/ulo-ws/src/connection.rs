@@ -48,6 +48,7 @@ use crate::gateway::{
 };
 use crate::rooms::{BroadcastError, Hub};
 use crate::session::SessionHandle;
+use crate::table::MessagesRead;
 use crate::transport::{ConnectCx, ConnectInner, ConnectReply, ConnectionInfo, CxInner, NoHandler, Reply, UpgradeHead, Ws, WsConnect, WsCx};
 
 /// A connection's id, unique across every process sharing a broadcast adapter: the process's
@@ -319,6 +320,7 @@ pub(crate) enum Phase {
 /// and the drain token their cleanups open terminal executions with.
 pub(crate) struct Tracker {
     pub(crate) places: Arc<Places>,
+    messages_read: MessagesRead,
     phase: Watch<Phase>,
     token: Watch<Option<DrainToken>>,
     tasks: Mutex<HashMap<u64, TaskHandle>>,
@@ -328,10 +330,11 @@ pub(crate) struct Tracker {
 
 impl Tracker {
     /// `max_inflight` is the server's bound on the messages all its connections have in flight
-    /// together, `None` for no bound.
-    pub(crate) fn new(max_inflight: Option<usize>) -> Arc<Tracker> {
+    /// together, `None` for no bound; `messages_read` counts every data message they read.
+    pub(crate) fn new(max_inflight: Option<usize>, messages_read: MessagesRead) -> Arc<Tracker> {
         Arc::new(Tracker {
             places: Arc::new(Places::new(max_inflight)),
+            messages_read,
             phase: Watch::new(Phase::Serving),
             token: Watch::new(None),
             tasks: Mutex::new(HashMap::new()),
@@ -1169,6 +1172,9 @@ where
             })
             .await
         };
+        if let Turn::Read(Some(Ok(Message::Text(_) | Message::Binary(_)))) = &event {
+            accept.tracker.messages_read.add();
+        }
         match event {
             Turn::Read(next) => match next {
                 None => break closing.unwrap_or(DisconnectReason::Lost),

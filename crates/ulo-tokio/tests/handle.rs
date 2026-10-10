@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use futures_executor::block_on;
 use tokio::runtime::{Builder, Handle, Runtime as TokioRuntime};
-use ulo::{Spawn, TaskEnd, Timer};
+use ulo::{Spawn, Timer};
 use ulo_tokio::{Stopped, Tokio};
 
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -36,7 +36,7 @@ fn spawns_from_a_thread_outside_any_runtime() {
     .expect("spawning from a plain thread panicked");
     finished.recv_timeout(PATIENCE).expect("the task spawned from a plain thread did not run");
     let end = runtime.block_on(task);
-    assert!(matches!(end, TaskEnd::Finished), "the task spawned from a plain thread ended {end:?}");
+    assert!(end.is_finished(), "the task spawned from a plain thread ended {end:?}");
 }
 
 #[test]

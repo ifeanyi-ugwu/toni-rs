@@ -111,7 +111,7 @@ pub(crate) async fn write<S: AsyncWrite + Unpin>(stream: &mut S, text: &str) {
 
 /// Reads the server's answer to an upgrade request whose key was `key`. A 101 must carry the
 /// `Sec-WebSocket-Accept` RFC 6455 §4.2.2 derives from that key, and the stream continues as the
-/// client's socket. A refusal's body is read by its `Content-Length`, or its chunks.
+/// client's socket. A refusal's body is read as [`read_body`] reads it.
 pub(crate) async fn read_answer<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, key: &str) -> Answer<S> {
     let (status, headers) = read_head(&mut stream).await;
     let mut answer = Answer { status, headers, body: String::new(), socket: None };
@@ -125,8 +125,8 @@ pub(crate) async fn read_answer<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S
     answer
 }
 
-/// Reads one response that switches no protocol, its body by its `Content-Length` or its chunks,
-/// and leaves `stream` where the next response would begin.
+/// Reads one response that switches no protocol, its body as [`read_body`] reads it, and leaves
+/// `stream` where the next response would begin.
 pub(crate) async fn read_response<S: AsyncRead + Unpin>(stream: &mut S) -> Answer<S> {
     let (status, headers) = read_head(stream).await;
     let body = read_body(stream, &headers).await;
@@ -161,7 +161,9 @@ async fn read_head<S: AsyncRead + Unpin>(stream: &mut S) -> (u16, Vec<(String, S
     (status, headers)
 }
 
-/// A response's body, by its `Content-Length` or its chunks; empty with neither.
+/// A response's body, by its `Content-Length` or its chunks, and with neither to the connection's
+/// close, which RFC 9112 §6.3 makes the end of such a body: poem answers an HTTP/1.0 request that
+/// way.
 async fn read_body<S: AsyncRead + Unpin>(stream: &mut S, headers: &[(String, String)]) -> String {
     let header = |name: &str| headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
     if let Some(length) = header("content-length").and_then(|length| length.parse::<usize>().ok()) {
@@ -171,7 +173,9 @@ async fn read_body<S: AsyncRead + Unpin>(stream: &mut S, headers: &[(String, Str
     } else if header("transfer-encoding").is_some_and(|coding| coding.eq_ignore_ascii_case("chunked")) {
         chunked(stream).await
     } else {
-        String::new()
+        let mut body = Vec::new();
+        stream.read_to_end(&mut body).await.unwrap_or_else(|error| panic!("reading the response's body to the close failed: {error}"));
+        String::from_utf8_lossy(&body).into_owned()
     }
 }
 

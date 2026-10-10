@@ -27,7 +27,7 @@ use crate::lifecycle::phase::Phase as Stage;
 use crate::lifecycle::{connect, shutdown};
 use crate::module::Module;
 use crate::module::handle::ModuleRef;
-use crate::redact::{Redacted, redact};
+use crate::redact::{Redacted, Redactor, redact};
 use crate::runtime::{Clocked, Runtime};
 use crate::signal::Signal;
 use crate::testing::TestPlan;
@@ -64,13 +64,16 @@ pub struct AppBuilder {
 /// The app's timing configuration. `None` is unset.
 #[derive(Clone, Default)]
 pub(crate) struct AppConfig {
-    /// The clock: the `Runtime`'s own object, unless `.timer(..)` came after `.runtime(..)`.
+    /// The clock: the same object as `runtime`, unless `.timer(..)` came after `.runtime(..)`.
     pub(crate) timer: Option<Arc<dyn Timer>>,
-    /// What `Dep<dyn Runtime>` resolves to: the runtime as given, or, once a later `.timer(..)`
-    /// replaced its clock, its spawning with that clock.
+    /// What `Dep<dyn Runtime>` resolves to: the app's wrapper around the runtime as given, timing
+    /// with its clock or, once a later `.timer(..)` replaced it, with that timer's.
     pub(crate) runtime: Option<Arc<dyn Runtime>>,
     /// The runtime as given to `.runtime(..)`, which a later `.timer(..)` takes the spawning of.
     spawner: Option<Arc<dyn Runtime>>,
+    /// The graph's secrets, which the app's runtime redacts a spawned task's panic with. The app
+    /// sets them once a graph exists.
+    pub(crate) redactor: Redactor,
     pub(crate) drain_timeout: Option<Duration>,
     pub(crate) shutdown_timeout: Option<Duration>,
     pub(crate) hook_timeout: Option<Duration>,
@@ -131,11 +134,9 @@ impl AppBuilder {
     /// reads it.
     pub fn timer(mut self, timer: impl Timer) -> Self {
         let timer: Arc<dyn Timer> = Arc::new(timer);
-        self.config.runtime = self
-            .config
-            .spawner
-            .as_ref()
-            .map(|spawner| Arc::new(Clocked::new(Arc::clone(spawner), Arc::clone(&timer))) as Arc<dyn Runtime>);
+        self.config.runtime = self.config.spawner.as_ref().map(|spawner| {
+            Arc::new(Clocked::new(Arc::clone(spawner), Arc::clone(&timer), self.config.redactor.clone())) as Arc<dyn Runtime>
+        });
         self.config.timer = Some(timer);
         self
     }
@@ -144,13 +145,19 @@ impl AppBuilder {
     /// module, and as `Dep<dyn Timer>`, which resolves to the same object. Everything a `Timer`
     /// alone enables it enables as the clock.
     ///
+    /// The object both resolve to is the app's wrapper around `runtime`: it spawns on `runtime`
+    /// and times with its clock, and a task spawned through it that panics ends `Panicked` with
+    /// every secret the app registered replaced in its message.
+    ///
     /// It sets both the spawning and the clock, so it replaces a [`timer`](Self::timer) set
-    /// before it: `.timer(t).runtime(r)` is `r` for both.
+    /// before it: `.timer(t).runtime(r)` spawns and times on `r`.
     pub fn runtime(mut self, runtime: impl Runtime) -> Self {
         let runtime: Arc<dyn Runtime> = Arc::new(runtime);
-        self.config.timer = Some(Arc::clone(&runtime) as Arc<dyn Timer>);
-        self.config.spawner = Some(Arc::clone(&runtime));
-        self.config.runtime = Some(runtime);
+        let clock = Arc::clone(&runtime) as Arc<dyn Timer>;
+        let wrapped: Arc<dyn Runtime> = Arc::new(Clocked::new(Arc::clone(&runtime), clock, self.config.redactor.clone()));
+        self.config.timer = Some(Arc::clone(&wrapped) as Arc<dyn Timer>);
+        self.config.spawner = Some(runtime);
+        self.config.runtime = Some(wrapped);
         self
     }
 

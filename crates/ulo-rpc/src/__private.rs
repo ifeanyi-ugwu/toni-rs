@@ -25,6 +25,9 @@ use ulo_transport::{CallError, ErrorKind, IntoReply};
 pub use ulo_transport as transport;
 pub use ulo_transport::__private::{Param, ViaCall, ViaContainer, controller};
 
+/// A broker link's held `cancel` and the probe the RPC conformance suite reads it through.
+pub use crate::held::{CANCEL_HOLD, ClientProbe};
+
 use crate::extract::{Inbound, Payload};
 use crate::frame::PayloadKind;
 use crate::transport::{Reply, Rpc, RpcCx};

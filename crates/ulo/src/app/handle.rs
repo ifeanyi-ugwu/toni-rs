@@ -96,8 +96,10 @@ impl AppHandle {
     }
 
     /// The app's `Runtime`, the object `Dep<dyn Runtime>` resolves to; `None` on an app built
-    /// without one. Its clock is [`timer`](Self::timer)'s: the same object, unless `.timer(..)`
-    /// came after `.runtime(..)`, when this is the runtime's spawning with that timer's clock.
+    /// without one. It is the app's wrapper around the runtime given, which spawns on it and
+    /// redacts a spawned task's panic with the app's secrets. Its clock is
+    /// [`timer`](Self::timer)'s: the same object, unless `.timer(..)` came after `.runtime(..)`,
+    /// when this times with that timer's clock.
     pub fn runtime(&self) -> Option<&Arc<dyn Runtime>> {
         self.shared.config.runtime.as_ref()
     }

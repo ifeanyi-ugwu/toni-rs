@@ -44,7 +44,7 @@ pub async fn abort_all<R: Runtime>(rt: R) {
         ends.push(end);
     }
     assert!(
-        ends.len() == TASKS && ends.iter().all(|end| matches!(end, TaskEnd::Aborted)),
+        ends.len() == TASKS && ends.iter().all(TaskEnd::is_aborted),
         "every task after `abort_all`: {ends:?}"
     );
     assert_eq!(drops.load(Ordering::SeqCst), TASKS, "futures dropped once every end was taken");

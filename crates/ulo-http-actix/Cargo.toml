@@ -31,7 +31,11 @@ tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 ulo-http-conformance = { path = "../ulo-http-conformance" }
-# `tests/websocket.rs`: a gateway on the HTTP transport, which a host without upgrades refuses.
+# `tests/ws_conformance.rs`: the WebSocket suite, whose gateways on the HTTP port a host without
+# upgrades refuses.
+ulo-ws-conformance = { path = "../ulo-ws-conformance" }
+# `tokio-io`: the suite's client stream, `Upgraded::from_tokio` over a `TcpStream`.
+ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 ulo-tokio = { path = "../ulo-tokio" }
 ulo-ws = { path = "../ulo-ws" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }

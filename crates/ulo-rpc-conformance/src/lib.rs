@@ -48,6 +48,7 @@ use std::time::Duration;
 
 use ulo::BoundAddr;
 use ulo_rpc::Link;
+use ulo_rpc::__private::ClientProbe;
 
 use crate::relay::Outage;
 
@@ -158,6 +159,15 @@ pub trait Broker: Sized + Send + Sync + 'static {
     fn budget(&self) -> Budget {
         Budget::default()
     }
+
+    /// The client side of `link` as the held-`cancel` scenarios read it, on a link that holds a
+    /// streamed request's `cancel` until the server acknowledges its `open`: NATS, RabbitMQ, MQTT
+    /// and Kafka answer the link's own probe. `None`, the default, elsewhere, where those
+    /// scenarios are not applicable.
+    fn probe(link: &Self::Link) -> Option<&ClientProbe> {
+        let _ = link;
+        None
+    }
 }
 
 /// How long a scenario waits on its environment.
@@ -255,6 +265,8 @@ macro_rules! conformance_suite {
             client_on_a_thread_without_a_runtime => threads::plain_thread,
             cancel_follows_its_request => order::cancel_follows_its_request,
             cancel_before_opened => order::cancel_before_opened,
+            a_late_opened_releases_the_held_cancel => order::late_opened,
+            a_held_cancel_is_dropped_when_its_hold_runs_out => order::hold_runs_out,
         );
     };
     (@cases $broker:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {

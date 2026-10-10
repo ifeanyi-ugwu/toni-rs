@@ -25,6 +25,10 @@ impl Host for Standalone {
     // `ulo-hyper-serve` starts hyper's graceful shutdown on every connection at the drain, which closes one idle between requests.
     const CLOSES_IDLE_AT_DRAIN: bool = true;
 
+    fn upgrades() -> bool {
+        true
+    }
+
     fn runtime() -> Tokio {
         Tokio::current()
     }

@@ -21,7 +21,7 @@ use tokio::sync::{Semaphore, watch};
 use tokio_tungstenite::tungstenite::Message;
 use ulo::{Dep, Module, ModuleDef, ModuleIdentity, injectable, routes};
 use ulo_transport::Count;
-use ulo_ws::{Connection, DisconnectReason, Frame, OnDisconnect, Payload, WsCx};
+use ulo_ws::{Connection, DisconnectReason, Frame, MessagesRead, OnDisconnect, Payload, WsCx};
 
 use support::{Record, Running, Socket, close_frame, hang_up, next_json, next_message, send_json, within};
 
@@ -310,6 +310,74 @@ async fn the_server_s_connections_together_stop_at_its_bound_and_resume_as_place
     }
     app.stop().await;
 }
+
+/// Waits until `count` reads at least `n`.
+async fn read_at_least(count: &MessagesRead, n: usize) {
+    within(&format!("{n} messages read"), async {
+        while count.get() < n {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+}
+
+/// The connections stop reading, not only handling, once the server's places are taken: the
+/// messages read off the sockets rise by at most one per connection open when the bound was
+/// reached, each waiting unhandled for a place, and a connection opened after reads nothing. The
+/// rest stays in the clients' TCP buffers until places free, and then every message is answered.
+#[tokio::test]
+async fn a_saturated_server_s_connections_stop_reading_off_their_sockets() {
+    const BOUND: usize = 2;
+    const MORE: usize = 3;
+    let server = ulo_ws_hyper::Server::new("127.0.0.1:0").server_max_inflight(Count::Max(BOUND as u32));
+    let read = server.messages_read();
+    let Started { app, turnstile, .. } = start_on(server).await;
+    let mut sockets = Vec::new();
+    for _ in 0..3 {
+        sockets.push(app.connect("/queue", &[]).await);
+    }
+    for id in 0..BOUND {
+        send_json(&mut sockets[0], &json!({ "event": "pass", "id": id })).await;
+    }
+    turnstile.started(BOUND).await;
+    for socket in &mut sockets {
+        for id in 0..MORE {
+            send_json(socket, &json!({ "event": "pass", "id": 100 + id })).await;
+        }
+    }
+    // The connections idle in a read when the bound was reached each read one message, which
+    // waits for a place; the one that reached it reads nothing more.
+    read_at_least(&read, BOUND + sockets.len() - 1).await;
+    tokio::time::sleep(SETTLE).await;
+    let saturated = read.get();
+    assert!(
+        saturated <= BOUND + sockets.len(),
+        "{saturated} messages read off the sockets of a server saturated at {BOUND} places, over {} connections",
+        sockets.len()
+    );
+    let mut late = app.connect("/queue", &[]).await;
+    send_json(&mut late, &json!({ "event": "pass", "id": 200 })).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(read.get(), saturated, "a connection opened while every place was taken read a message");
+    sockets.push(late);
+
+    let total = BOUND + 3 * MORE + 1;
+    turnstile.release(total);
+    passed(&mut sockets[0], BOUND + MORE).await;
+    for socket in &mut sockets[1..3] {
+        passed(socket, MORE).await;
+    }
+    passed(&mut sockets[3], 1).await;
+    assert_eq!(read.get(), total, "every message read once places freed");
+    assert_eq!(turnstile.most(), BOUND, "the most messages the server's connections had in flight at once");
+    for socket in sockets {
+        hang_up(socket).await;
+    }
+    app.stop().await;
+}
+
+/// How long the test waits for a read it expects not to happen.
+const SETTLE: Duration = Duration::from_millis(200);
 
 #[tokio::test]
 async fn a_message_over_the_limit_closes_with_1009() {

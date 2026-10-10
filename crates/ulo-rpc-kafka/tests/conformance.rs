@@ -28,6 +28,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use ulo::{App, BoundAddr, Module, ModuleDef, ModuleIdentity, Signal};
 use ulo_rpc::{CallHeaders, Data, Frame, Link, Pattern, ReplyTo};
+use ulo_rpc::__private::ClientProbe;
 use ulo_rpc_conformance::relay::{Outage, Relay, reachable, unshadowed};
 use ulo_rpc_conformance::{Broker, Budget, report, startup_failed};
 use ulo_rpc_kafka::Kafka;
@@ -48,6 +49,10 @@ struct KraftBroker {
 
 impl Broker for KraftBroker {
     type Link = Kafka;
+
+    fn probe(link: &Kafka) -> Option<&ClientProbe> {
+        Some(link.probe())
+    }
 
     const PARALLEL: Option<NonZeroUsize> = NonZeroUsize::new(4);
 

@@ -3,6 +3,10 @@
 //! request cancelled before the server acknowledged its `open` reaches the server as the `open`
 //! and then the `cancel`, so the server holds nothing for it.
 //!
+//! On a link that holds the `cancel`, the held `cancel` goes out when an `opened` arrives late,
+//! after the call ended, and is dropped with its entry once the link's hold runs out, so a call
+//! whose `opened` never comes holds nothing until the link closes.
+//!
 //! On a link without `ordered_control` a request's control frames travel a lane of their own and
 //! the broker can deliver a `cancel` ahead of its request, so there the first scenario's order is
 //! not observable and the link declares it not applicable.
@@ -14,6 +18,7 @@ use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use ulo::{App, Module, ModuleDef, ModuleIdentity, Shape, Signal};
 use ulo::app::Connected;
+use ulo_rpc::__private::ClientProbe;
 use ulo_rpc::{CallHeaders, Codec, Delivery, Frame, Link, Outbound, Pattern, ReplyTo};
 
 use crate::{Broker, report};
@@ -29,6 +34,13 @@ const OPENS: u64 = 20;
 
 /// How long the server's link waits for each frame.
 const PATIENCE: Duration = Duration::from_secs(5);
+
+/// The hold `hold_runs_out` gives a held `cancel`, in place of the link's own, and how late
+/// `late_opened`'s `opened` arrives.
+const SHORT_HOLD: Duration = Duration::from_millis(300);
+
+/// How often a scenario reads the client probe while it waits on it.
+const PROBE_POLL: Duration = Duration::from_millis(10);
 
 /// An app with nothing in it, whose handle the server's link is prepared with.
 struct Empty;
@@ -160,5 +172,80 @@ pub async fn cancel_before_opened<B: Broker>() {
         cancelled.unwrap_or_else(|error| panic!("the cancel of call {id} was not sent: {error}"));
     }
     linked.read_pairs(OPENS, "opens").await;
+    linked.stop().await;
+}
+
+/// The client probe of `B`'s client link, or a failure naming the declaration.
+fn probe<B: Broker>(linked: &Linked<B>) -> &ClientProbe {
+    B::probe(&linked.client).unwrap_or_else(|| {
+        panic!(
+            "the environment reads no client probe, so the link holds no `cancel` for an `opened`: declare the held-cancel \
+             scenarios not applicable with the reason"
+        )
+    })
+}
+
+/// Waits until `done` holds of the probe, read every 10 ms, failing after [`PATIENCE`].
+async fn probe_until(probe: &ClientProbe, what: &str, done: impl Fn(&ClientProbe) -> bool) {
+    let waited = tokio::time::timeout(PATIENCE, async {
+        while !done(probe) {
+            tokio::time::sleep(PROBE_POLL).await;
+        }
+    })
+    .await;
+    assert!(waited.is_ok(), "{what} did not happen within {PATIENCE:?}");
+}
+
+impl<B: Broker> Linked<B> {
+    /// Opens streamed request `id` with the server's `opened` withheld from the client's link,
+    /// waits until the server holds the call and its `opened` has reached the client, and cancels
+    /// the call, as a call's timeout or drop does: the client's table then holds the `cancel` alone.
+    async fn cancel_with_opened_withheld(&mut self, id: u64) {
+        probe(self).withhold();
+        let pattern = Pattern::from(ORDERED);
+        let open = Frame::Open { id, pattern: ORDERED.to_owned(), headers: CallHeaders::new() };
+        (self.outbound.send)(pattern.clone(), open, Some(ReplyTo { id }))
+            .await
+            .unwrap_or_else(|error| panic!("the open of call {id} was not sent: {error}"));
+        let delivered = tokio::time::timeout(PATIENCE, self.inbound.next()).await.expect("the open did not reach the server");
+        let frame = delivered.expect("the server's inbound stream ended").frame;
+        assert!(matches!(frame, Frame::Open { .. }), "the server received {frame:?} where the open was due");
+        let probe = probe(self);
+        probe_until(probe, "the server's `opened` reaching the client", |probe| probe.withheld() == 1).await;
+        (self.outbound.send)(pattern, Frame::Cancel { id }, None)
+            .await
+            .unwrap_or_else(|error| panic!("the cancel of call {id} was not sent: {error}"));
+        assert_eq!(probe.calls(), Some(1), "the client's table once the call was cancelled before its `opened`");
+    }
+}
+
+/// A streamed request cancelled before its `opened` reached the client, as a timeout or a drop
+/// cancels it, keeps its `cancel`; the `opened` arriving 300 ms afterwards, within the
+/// link's hold, sends it, and the server receives it for the call it holds. The client's table is then empty.
+pub async fn late_opened<B: Broker>() {
+    let mut linked = Linked::<B>::start().await;
+    linked.cancel_with_opened_withheld(1).await;
+    // Late by the short hold, and well inside the link's own.
+    tokio::time::sleep(SHORT_HOLD).await;
+    probe(&linked).release();
+    let delivered = tokio::time::timeout(PATIENCE, linked.inbound.next()).await.unwrap_or_else(|_| {
+        panic!("the held cancel did not reach the server within {PATIENCE:?} of the late `opened`")
+    });
+    let frame = delivered.expect("the server's inbound stream ended").frame;
+    assert!(matches!(frame, Frame::Cancel { .. }), "the server received {frame:?} where the held cancel was due");
+    assert_eq!(probe(&linked).calls(), Some(0), "the client's table once the held cancel went out");
+    linked.stop().await;
+}
+
+/// A streamed request cancelled before its `opened` reached the client, whose `opened` never
+/// comes, leaves no entry in the client's table once the link's hold runs out, shortened here to
+/// 300 ms.
+pub async fn hold_runs_out<B: Broker>() {
+    let mut linked = Linked::<B>::start().await;
+    probe(&linked).set_hold(SHORT_HOLD);
+    let cancelled = tokio::time::Instant::now();
+    linked.cancel_with_opened_withheld(1).await;
+    probe_until(probe(&linked), "the held cancel's entry dropped", |probe| probe.calls() == Some(0)).await;
+    assert!(cancelled.elapsed() >= SHORT_HOLD, "the held cancel was dropped before its hold ran out");
     linked.stop().await;
 }
