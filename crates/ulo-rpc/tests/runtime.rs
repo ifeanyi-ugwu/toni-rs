@@ -3,7 +3,9 @@
 //! built outside an app closes its link from a task on the runtime it holds when it is dropped,
 //! or, when that runtime drops the task unrun, releases its connection and warns. A client built
 //! outside an app takes its default timeout from `RpcClient::timeout`, as a module's takes it from
-//! `RpcClientModule::timeout`, and both refuse a zero as `ZeroTimeout`.
+//! `RpcClientModule::timeout`, and both refuse a zero as `ZeroTimeout`. A link that can never
+//! connect is refused as `UnusableLink`, by `RpcClient::new` where the client is built and by
+//! `RpcClientModule` when the app connects.
 //!
 //! The [`Capture`] installed as the global subscriber tells one test's events from another's by
 //! the thread, for the reason `drain_window.rs` gives: tracing caches a callsite's interest from
@@ -19,9 +21,9 @@ use tokio::sync::Notify;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event as TraceEvent, Level, Metadata};
-use ulo::{App, Bound, BoxError, Module, ModuleDef, ModuleIdentity, RuntimeMissing, StartupError, WiringError};
+use ulo::{App, Bound, BoxError, ConnectError, FailureReason, Module, ModuleDef, ModuleIdentity, RuntimeMissing, StartupError, WiringError};
 use ulo_rpc::link::Inbound;
-use ulo_rpc::{Capabilities, DeliveryMode, Link, Outbound, Pattern, RpcClient, RpcClientModule, ZeroTimeout};
+use ulo_rpc::{Capabilities, DeliveryMode, Link, Outbound, Pattern, RpcClient, RpcClientModule, UnusableLink, ZeroTimeout};
 use ulo_transport::ErrorKind;
 use ulo_tokio::Tokio;
 
@@ -154,7 +156,7 @@ async fn timed_out_after(client: RpcClient) -> Option<Duration> {
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_client_built_outside_an_app_times_out_at_its_own_timeout() {
-    let client = RpcClient::new(Observed(Arc::default()), Arc::new(Tokio::current()));
+    let client = RpcClient::new(Observed(Arc::default()), Arc::new(Tokio::current())).expect("the link is usable");
     let default = timed_out_after(client.clone()).await;
     assert_eq!(default, Some(Duration::from_secs(5)), "a client from `RpcClient::new` with no `timeout`");
     let shorter = client.clone().timeout(Bound::After(Duration::from_millis(250))).expect("a nonzero timeout is taken");
@@ -169,7 +171,7 @@ async fn a_client_built_outside_an_app_times_out_at_its_own_timeout() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_zero_client_timeout_is_refused_where_it_is_written() {
-    let client = RpcClient::new(Observed(Arc::default()), Arc::new(Tokio::current()));
+    let client = RpcClient::new(Observed(Arc::default()), Arc::new(Tokio::current())).expect("the link is usable");
     let Err(refused) = client.timeout(Bound::After(Duration::ZERO)) else {
         panic!("`RpcClient::timeout(Bound::After(Duration::ZERO))` was taken");
     };
@@ -215,11 +217,85 @@ async fn a_zero_module_timeout_fails_wiring_as_the_same_refusal() {
     );
 }
 
+/// What `Link::usable` refuses with on [`Unusable`].
+const UNUSABLE: &str = "the unusable link has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
+
+/// A link whose `usable` refuses, as a tokio-based link built outside a runtime does; it counts
+/// its connects.
+#[derive(Default)]
+struct Unusable(Arc<AtomicU64>);
+
+impl Link for Unusable {
+    const NAME: &'static str = "unusable";
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::new(DeliveryMode::Addressed)
+    }
+
+    fn usable(&self) -> Result<(), BoxError> {
+        Err(UNUSABLE.into())
+    }
+
+    async fn listen(&self, _patterns: &[Pattern]) -> Result<Inbound, BoxError> {
+        Err("this link has no server side".into())
+    }
+
+    async fn connect(&self) -> Result<Outbound, BoxError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(UNUSABLE.into())
+    }
+
+    async fn drain(&self) {}
+
+    async fn close(&self) -> Result<(), BoxError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_client_on_a_link_it_cannot_use_is_refused_where_it_is_built() {
+    let runtime = tokio::runtime::Builder::new_current_thread().build().expect("a tokio runtime for the test");
+    let connects = Arc::new(AtomicU64::new(0));
+    let built = RpcClient::new(Unusable(Arc::clone(&connects)), Arc::new(Tokio::from_handle(runtime.handle().clone())));
+    let Err(refused) = built else {
+        panic!("`RpcClient::new` took a link whose `usable` refuses");
+    };
+    assert_eq!(refused.link(), "unusable");
+    assert_eq!(refused.to_string(), format!("`RpcClient::new` was given a unusable link it cannot use: {UNUSABLE}"));
+    assert_eq!(connects.load(Ordering::SeqCst), 0, "the refused client connected");
+}
+
+/// Imports one `RpcClientModule` over a link whose `usable` refuses.
+struct WithUnusable(Arc<AtomicU64>);
+
+impl Module for WithUnusable {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<Self>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        m.import(RpcClientModule::for_root(Unusable(Arc::clone(&self.0))));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_client_module_on_a_link_it_cannot_use_fails_connect() {
+    let connects = Arc::new(AtomicU64::new(0));
+    let wired = App::builder(WithUnusable(Arc::clone(&connects))).runtime(Tokio::current()).wire().expect("the app wires");
+    let Err(StartupError::Connect(ConnectError::Hook { reason: FailureReason::Errored(error), .. })) = wired.connect().await else {
+        panic!("an `RpcClientModule` over a link whose `usable` refuses connected, or failed other than in a hook");
+    };
+    let refused = error.downcast_ref::<UnusableLink>().unwrap_or_else(|| panic!("the hook's error is not an `UnusableLink`: {error}"));
+    assert_eq!(refused.link(), "unusable");
+    assert_eq!(refused.to_string(), format!("`RpcClientModule::for_root` was given a unusable link it cannot use: {UNUSABLE}"));
+    assert_eq!(connects.load(Ordering::SeqCst), 0, "the refused client connected");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_dropped_client_closes_its_link_on_its_runtime() {
     capture();
     let seen = Arc::new(Seen::default());
-    let client = RpcClient::new(Observed(Arc::clone(&seen)), Arc::new(Tokio::current()));
+    let client = RpcClient::new(Observed(Arc::clone(&seen)), Arc::new(Tokio::current())).expect("the link is usable");
     client.emit("runtime.connect", &1u32).await.expect("the event is sent, which connects");
 
     let closing = seen.closing.notified();
@@ -236,7 +312,7 @@ fn a_dropped_client_whose_runtime_has_shut_down_releases_its_connection_and_warn
     capture();
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a tokio runtime for the test");
     let seen = Arc::new(Seen::default());
-    let client = RpcClient::new(Observed(Arc::clone(&seen)), Arc::new(Tokio::from_handle(runtime.handle().clone())));
+    let client = RpcClient::new(Observed(Arc::clone(&seen)), Arc::new(Tokio::from_handle(runtime.handle().clone()))).expect("the link is usable");
     runtime.block_on(async { client.emit("runtime.connect", &1u32).await }).expect("the event is sent, which connects");
     drop(runtime);
 

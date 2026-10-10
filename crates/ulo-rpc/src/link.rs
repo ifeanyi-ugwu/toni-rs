@@ -34,10 +34,21 @@ pub trait Link: Send + Sync + 'static {
     /// What can fail before any I/O: endpoint text, `Tls`, a broker URL. Called from
     /// `Server::prepare`, with the app, whose root module's full type path
     /// (`format!("{:#}", app.root().name())`) is the default competing-consumer group on NATS and
-    /// MQTT. A client's link reports the same failures from its first `connect`.
+    /// MQTT. It reports [`usable`](Self::usable)'s refusal beside its own. A client's link reports
+    /// that refusal where the client is built, and the rest from its first `connect`.
     fn prepare(&mut self, app: &AppHandle) -> impl Future<Output = Result<(), BoxError>> + Send {
         let _ = app;
         async { Ok(()) }
+    }
+
+    /// What the link refuses before any I/O and without an app: on a tokio-based link, being built
+    /// outside a runtime and given none. [`RpcClient::new`](crate::RpcClient::new) calls it and
+    /// refuses the client, and `RpcClientModule` calls it from its init hook, failing the app's
+    /// `connect`, so a client's link that can never connect fails where it is set up rather than as
+    /// each call's `Unavailable`. It runs when a client takes the link, not when the link is built,
+    /// so `Tcp::new(addr).with_handle(h)` written off a runtime passes.
+    fn usable(&self) -> Result<(), BoxError> {
+        Ok(())
     }
 
     /// The server's in-flight bound, `Server::max_inflight` as set, called from `Server::prepare`
@@ -183,6 +194,13 @@ impl fmt::Debug for Ack {
 /// reply's correlation when one is expected, and `replies` yields every reply-lane frame for this
 /// client. A link with a miss signal fails `send` with [`NoDestination`]; one refusing a frame over
 /// its size with [`FrameTooLarge`].
+///
+/// Frames go out in the order their sends are first polled, so a streamed request's `in` items
+/// arrive in order with `in_end` last, and a `cancel` follows the request it names: every link
+/// funnels its frames through one ordered queue to the task that writes them, never a task per
+/// frame. The one exception is a streamed request's `in`, `in_end` and `cancel` on a broker, held
+/// until the server acknowledges the `open` and then sent in their own order. The same holds for a
+/// server's [`ReplyPath`]s.
 pub struct Outbound {
     pub send: Box<dyn Fn(Pattern, Frame, Option<ReplyTo>) -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync>,
     pub replies: BoxStream<'static, Frame>,

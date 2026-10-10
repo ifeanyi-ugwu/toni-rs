@@ -41,6 +41,7 @@ pub(crate) const HOLD: &str = "conformance.hold";
 pub(crate) const NEVER: &str = "conformance.never";
 pub(crate) const COUNT: &str = "conformance.count";
 pub(crate) const SUM: &str = "conformance.sum";
+pub(crate) const COLLECT: &str = "conformance.collect";
 pub(crate) const DOUBLE: &str = "conformance.double";
 pub(crate) const TICKS: &str = "conformance.ticks";
 pub(crate) const UNTIL_DRAIN: &str = "conformance.until_drain";
@@ -381,6 +382,18 @@ impl StreamController {
             total += item.map_err(|_| Refusal::BadItem)?;
         }
         Ok(total)
+    }
+
+    /// The streamed request's items in the order they arrived, answered once `in_end` ends the
+    /// stream: an item arriving after `in_end` is not among them.
+    #[ulo_rpc::message("conformance.collect")]
+    async fn collect(&self, items: Inbound<u32>) -> Result<Vec<u32>, Refusal> {
+        let mut items = items;
+        let mut arrived = Vec::new();
+        while let Some(item) = items.next().await {
+            arrived.push(item.map_err(|_| Refusal::BadItem)?);
+        }
+        Ok(arrived)
     }
 
     #[ulo_rpc::message("conformance.double")]

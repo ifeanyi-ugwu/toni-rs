@@ -1,7 +1,8 @@
 //! Gateways on the HTTP server's own port, reached through the upgrade hand-off `WsModule`
 //! registers and served by `ulo_http::Server` over hyper: the hand-off beside an HTTP route,
-//! `WsModule`'s defaults, `AfterInit` run from the hand-off's `bound`, the drain's 1001, and rooms
-//! and broadcast across connections.
+//! `WsModule`'s defaults, `AfterInit` run from the hand-off's `bound`, the drain's 1001, rooms
+//! and broadcast across connections, and a broadcast adapter refusing in its `prepare` failing the
+//! HTTP server's `listen()`.
 
 mod support;
 
@@ -12,9 +13,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use ulo::{Dep, Module, ModuleDef, ModuleIdentity, injectable, routes};
+use bytes::Bytes;
+use futures_util::stream::BoxStream;
+use ulo::{App, BoxError, BoxFuture, Dep, Module, ModuleDef, ModuleIdentity, Signal, StartupError, injectable, routes};
 use ulo_transport::Count;
-use ulo_ws::{AfterInit, ConnId, ConnectCx, ConnectRefused, GatewayRef, OnConnect, Payload, Rooms, WsCx, WsModule};
+use ulo_ws::{
+    AfterInit, BroadcastAdapter, ConnId, ConnectCx, ConnectRefused, GatewayRef, NodeId, OnConnect, Payload, Rooms, Target, WsCx, WsModule,
+};
 
 use support::{Record, Running, close_frame, hang_up, next_json, send_json, upgrade, within};
 
@@ -352,4 +357,63 @@ async fn a_connection_that_left_the_room_receives_none_of_its_broadcasts() {
     hang_up(ada).await;
     hang_up(bob).await;
     app.stop().await;
+}
+
+/// What [`Refusing`]'s `prepare` answers.
+const REFUSAL: &str = "the refusing adapter cannot carry broadcasts";
+
+/// A broadcast adapter whose `prepare` refuses, as one tied to a tokio runtime refuses when it has
+/// none.
+struct Refusing;
+
+impl BroadcastAdapter for Refusing {
+    fn prepare(&self) -> Result<(), BoxError> {
+        Err(REFUSAL.into())
+    }
+
+    fn publish(&self, _target: Target, _frame: Bytes) -> BoxFuture<'static, Result<(), BoxError>> {
+        Box::pin(async { Err(BoxError::from(REFUSAL)) })
+    }
+
+    fn subscribe(&self, _node: NodeId) -> BoxStream<'static, (Target, Bytes)> {
+        Box::pin(futures_util::stream::empty())
+    }
+}
+
+/// `WsModule` over [`Refusing`], with one gateway on the HTTP port.
+struct RefusingRoot;
+
+impl Module for RefusingRoot {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<Self>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        m.import(WsModule::for_root().broadcast(Refusing));
+        m.controller::<Annex>();
+    }
+}
+
+#[tokio::test]
+async fn a_broadcast_adapter_refusing_in_prepare_fails_the_http_server_s_listen() {
+    let bound = App::builder(RefusingRoot)
+        .runtime(ulo_tokio::Tokio::current())
+        .wire()
+        .expect("the app wires")
+        .connect()
+        .await
+        .expect("the app connects")
+        .bind(ulo_http_hyper::Server::new("127.0.0.1:0"))
+        .listen()
+        .await;
+    match bound {
+        Err(StartupError::Configure(refused)) => {
+            assert!(refused.to_string().contains(REFUSAL), "the refusal does not carry the adapter's: {refused}");
+        }
+        Err(other) => panic!("expected a `Configure` refusal, got: {other}"),
+        Ok(app) => {
+            let _ = app.handle().close(Signal::new("handoff")).await;
+            panic!("an HTTP server listened with a broadcast adapter that refused in `prepare`");
+        }
+    }
 }

@@ -44,7 +44,8 @@ const DOMAIN: &str = "ulo.rpc";
 /// be polled on any executor or on a plain thread: each connection is opened there and its task
 /// runs there, and a publish, a subscription, a flush or a drain reaches that task through
 /// async-nats's command channel. A link built outside a runtime and given none refuses in
-/// `prepare` and in `connect`.
+/// `usable`, so a client is refused where it takes the link and a server's `listen()` fails, and
+/// in `connect`.
 pub struct Nats {
     pub(crate) url: String,
     pub(crate) group: Option<String>,
@@ -118,8 +119,12 @@ impl Link for Nats {
             .max_frame((max_payload > 0).then_some(max_payload))
     }
 
+    fn usable(&self) -> Result<(), BoxError> {
+        self.runtime().map(drop)
+    }
+
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
-        self.runtime()?;
+        self.usable()?;
         servers(&self.url)?;
         match &self.group {
             Some(group) => check_group(group)?,

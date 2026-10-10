@@ -69,7 +69,7 @@ impl UpgradeHandler for Handoff {
     }
 
     /// The gateways on the HTTP server's port, built and checked; `WsModule`'s own defaults are
-    /// checked for zero limits too.
+    /// checked for zero limits too, and the broadcast adapter's `prepare` runs beside them.
     fn prepare(&self, app: &AppHandle) -> Result<(), BoxError> {
         let connects = app.mounted::<WsConnect>()?;
         let messages = app.mounted::<Ws>()?;
@@ -77,6 +77,9 @@ impl UpgradeHandler for Handoff {
         let runtime = app.runtime().cloned().ok_or("the WebSocket hand-off was prepared on an app with no runtime")?;
         let mut failures = Failures::new();
         check_defaults("WsModule", &self.defaults, &mut failures);
+        if let Err(error) = self.hub.prepare() {
+            failures.push_error(error);
+        }
         let gateways = build_table(&connects, &messages, Port::Http, &self.defaults, &mut failures);
         let table = GatewayTable::new(gateways, Arc::clone(&self.hub), app.clone(), runtime);
         *self.table.lock().unwrap_or_else(PoisonError::into_inner) = Some(table);

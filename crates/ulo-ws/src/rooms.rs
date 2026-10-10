@@ -55,6 +55,11 @@ impl Hub {
         }
     }
 
+    /// The adapter's own refusal, which a server's `prepare` reports beside its own failures.
+    pub(crate) fn prepare(&self) -> Result<(), BoxError> {
+        self.adapter.prepare()
+    }
+
     pub(crate) fn next_id(&self) -> ConnId {
         ConnId { node: self.node, seq: self.seq.fetch_add(1, Ordering::Relaxed) }
     }

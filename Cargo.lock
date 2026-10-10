@@ -6671,6 +6671,7 @@ dependencies = [
 name = "ulo-rpc-redis"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures-core",
  "futures-executor",
  "futures-util",

@@ -60,7 +60,8 @@ const RECEIVE_MAXIMUM: u16 = u16::MAX;
 /// was built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may
 /// be polled on any executor or on a plain thread: each connection's event loop runs there, and a
 /// publish, an unsubscribe or a disconnect reaches it through rumqttc's request channel. A link
-/// built outside a runtime and given none refuses in `prepare` and in `connect`.
+/// built outside a runtime and given none refuses in `usable`, so a client is refused where it
+/// takes the link and a server's `listen()` fails, and in `connect`.
 pub struct Mqtt {
     pub(crate) url: String,
     pub(crate) group: Option<String>,
@@ -164,8 +165,12 @@ impl Link for Mqtt {
             .max_frame((max_packet > 0).then_some(max_packet))
     }
 
+    fn usable(&self) -> Result<(), BoxError> {
+        self.runtime().map(drop)
+    }
+
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
-        self.runtime()?;
+        self.usable()?;
         Target::parse(&self.url)?;
         match &self.group {
             Some(group) => check_group(group)?,
@@ -202,14 +207,16 @@ impl Link for Mqtt {
 
         let (ready, bound) = oneshot::channel();
         let task = runtime.handle().spawn(server_loop(Arc::clone(&side), eventloop, ready));
+        // Until the broker answers, a `listen` dropped mid-handshake takes the event loop with it.
+        let pending = AbortOnDrop::new(task.abort_handle());
         // `bind`'s outcome waits for the first CONNACK and the SUBACK of every subscription, so a
         // broker without shared subscriptions, or one refusing a filter, fails `bind`.
         let outcome = bound.await.unwrap_or_else(|_| Err("the MQTT link's event loop ended before the broker answered".into()));
         if let Err(error) = outcome {
-            task.abort();
             let _ = side.client.try_disconnect();
             return Err(error);
         }
+        pending.disarm();
         lock(&self.state).server = Some((side, task));
         Ok(receiver_stream(inbound))
     }
@@ -237,12 +244,13 @@ impl Link for Mqtt {
         let (frames, replies) = mpsc::unbounded_channel();
         let (ready, subscribed) = oneshot::channel();
         let task = runtime.handle().spawn(client_loop(Arc::clone(&side), eventloop, frames, ready));
+        // Until the broker answers, a `connect` dropped mid-handshake, a call's timeout cutting it
+        // short, takes the event loop with it.
+        let pending = AbortOnDrop::new(task.abort_handle());
         // The reply subscription is in place before the first request can be published.
         let outcome = subscribed.await.unwrap_or_else(|_| Err("the MQTT link's event loop ended before the broker answered".into()));
-        if let Err(error) = outcome {
-            task.abort();
-            return Err(error);
-        }
+        outcome?;
+        pending.disarm();
         lock(&self.state).client = Some((Arc::clone(&side), task));
 
         Ok(Outbound {
@@ -313,7 +321,7 @@ impl Link for Mqtt {
 /// `cancel` on the client side. Where neither ending comes, the core's `close` bound drops this
 /// future and the guard aborts the loop.
 async fn shut(client: &AsyncClient, mut task: JoinHandle<()>) {
-    let _abort = AbortOnDrop(task.abort_handle());
+    let _abort = AbortOnDrop::new(task.abort_handle());
     let _ = client.disconnect().await;
     let _ = (&mut task).await;
 }
@@ -343,12 +351,24 @@ impl Drop for Unconfirmed {
     }
 }
 
-/// Aborts a task when dropped.
-struct AbortOnDrop(AbortHandle);
+/// Aborts a task when dropped, unless disarmed first.
+struct AbortOnDrop(Option<AbortHandle>);
+
+impl AbortOnDrop {
+    fn new(task: AbortHandle) -> Self {
+        AbortOnDrop(Some(task))
+    }
+
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
     }
 }
 

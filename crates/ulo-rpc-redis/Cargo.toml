@@ -22,6 +22,7 @@ ulo = { path = "../ulo" }
 ulo-rpc = { path = "../ulo-rpc" }
 ulo-tokio = { path = "../ulo-tokio" }
 ulo-transport = { path = "../ulo-transport" }
+bytes.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 redis = { workspace = true, features = ["connection-manager"] }

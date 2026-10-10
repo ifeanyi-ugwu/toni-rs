@@ -43,7 +43,7 @@ pub async fn plain_thread<B: Broker>() {
 
     let thread = std::thread::spawn(move || {
         assert!(tokio::runtime::Handle::try_current().is_err(), "the client's thread has a tokio runtime current");
-        let client = RpcClient::new(link, runtime);
+        let client = RpcClient::new(link, runtime).expect("the scenario's link holds the scenario's runtime");
         let answers = futures_executor::block_on(async {
             let sum = client.request::<_, Sum>(ADD, &Add { a: 2, b: 3 }).timeout(WAIT).await;
             let emitted = client.emit(EVENT, &11u32).await;

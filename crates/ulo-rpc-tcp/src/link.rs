@@ -59,7 +59,8 @@ const CLOSED: u8 = 2;
 /// The link's sockets and tasks live on the tokio runtime it holds, the one current where it was
 /// built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may be
 /// polled on any executor or on a plain thread. A link built outside a runtime and given none
-/// refuses in `prepare` and in `connect`.
+/// refuses in `usable`, so a client is refused where it
+/// takes the link and a server's `listen()` fails, and in `connect`.
 pub struct Tcp {
     pub(crate) endpoint: EndpointSpec,
     pub(crate) tls: Option<Tls>,
@@ -172,11 +173,15 @@ impl Link for Tcp {
             .miss_signal(true)
     }
 
+    fn usable(&self) -> Result<(), BoxError> {
+        self.runtime().map(drop)
+    }
+
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
         let _ = app;
         let mut problems = Vec::new();
-        if self.runtime.is_none() {
-            problems.push(NO_RUNTIME.to_owned());
+        if let Err(error) = self.usable() {
+            problems.push(error.to_string());
         }
         let endpoint = match self.endpoint.resolve() {
             Ok(endpoint) => Some(endpoint),

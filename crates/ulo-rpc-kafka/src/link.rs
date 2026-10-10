@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
@@ -55,12 +56,24 @@ const MAX_MESSAGE: u64 = 1_000_000;
 /// How long librdkafka keeps trying to deliver one record, in place of its five-minute default.
 const DELIVERY_TIMEOUT: &str = "30000";
 
+/// How long a record waits for room in librdkafka's queue before its produce fails.
+const QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Frames queued for one side's writer; a full queue makes the next send wait.
+const WRITE_QUEUE: usize = 64;
+
 /// The Kafka link.
+///
+/// Each side produces through one writer task, fed in order by every send on it, so the records a
+/// side sends are queued with librdkafka in the order they were sent: a request's `in` items
+/// before its `in_end`, and a `cancel` after the request it names. A request's topic and the
+/// control topic are separate, so the broker can still deliver a `cancel` ahead of its request.
 ///
 /// The link's clients and tasks live on the tokio runtime it holds, the one current where it was
 /// built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may be
 /// polled on any executor or on a plain thread. A link built outside a runtime and given none
-/// refuses in `prepare` and in `connect`.
+/// refuses in `usable`, so a client is refused where it
+/// takes the link and a server's `listen()` fails, and in `connect`.
 pub struct Kafka {
     pub(crate) brokers: String,
     pub(crate) runtime: Option<Tokio>,
@@ -164,8 +177,12 @@ impl Link for Kafka {
             .max_frame(Some(MAX_MESSAGE))
     }
 
+    fn usable(&self) -> Result<(), BoxError> {
+        self.runtime().map(drop)
+    }
+
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
-        self.runtime()?;
+        self.usable()?;
         Brokers::parse(&self.brokers)?;
         if self.partitions < 1 || self.replication < 1 {
             return Err(format!(
@@ -228,9 +245,11 @@ impl Link for Kafka {
 
         let (phase, _) = watch::channel(Phase::Serving);
         let (deliveries, inbound) = mpsc::unbounded_channel();
+        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        runtime.handle().spawn(server_writer(producer, queued));
         let side = Arc::new(ServerSide {
             consumer,
-            producer,
+            writes,
             codec: self.codec,
             runtime: runtime.clone(),
             calls: Arc::new(Calls::new()),
@@ -272,23 +291,27 @@ impl Link for Kafka {
         let side = Arc::new(ClientSide {
             producer: Mutex::new(Some(producer)),
             codec: self.codec,
-            runtime: runtime.clone(),
             id,
             reply_topic,
             calls: Mutex::new(HashMap::new()),
             closed: Mutex::new(Some(closed)),
             routing: Mutex::new(None),
         });
+        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        runtime.handle().spawn(client_writer(Arc::clone(&side), queued));
         let (frames, replies_out) = mpsc::unbounded_channel();
-        let routing = runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames, closing));
+        let routing = runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames, closing, writes.clone()));
         *lock(&side.routing) = Some(routing);
         lock(&self.state).client = Some(Arc::clone(&side));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
-                let side = Arc::clone(&side);
-                let sent = runtime.run(async move { side.send(pattern, frame).await });
-                Box::pin(async move { sent.await? })
+                let writes = writes.clone();
+                Box::pin(async move {
+                    let (answer, answered) = oneshot::channel();
+                    writes.send(Job::Send { pattern, frame, answer }).await.map_err(|_| BoxError::from(CLOSED))?;
+                    answered.await.map_err(|_| BoxError::from(CLOSED))?
+                })
             }),
             replies: receiver_stream(replies_out),
         })
@@ -319,8 +342,13 @@ impl Link for Kafka {
             side.phase.send_replace(Phase::Closed);
             side.calls.clear();
             lock(&side.deliveries).take();
-            if let Err(error) = side.consumer.commit_consumer_state(CommitMode::Sync) {
-                tracing::debug!(%error, "the Kafka link had no offset to commit at close");
+            // A synchronous commit blocks its thread until the broker answers, or until
+            // librdkafka's request timeout once the broker is gone, so it runs on one of its own.
+            let consumer = Arc::clone(&side.consumer);
+            match blocking(move || consumer.commit_consumer_state(CommitMode::Sync)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::debug!(%error, "the Kafka link had no offset to commit at close"),
+                Err(error) => tracing::warn!(%error, "the Kafka link's commit at close failed"),
             }
         }
         if let Some(side) = client {
@@ -570,9 +598,10 @@ async fn control_consumer(base: &ClientConfig, group: &str) -> Result<Arc<Detach
 /// and where deliveries go.
 struct ServerSide {
     consumer: Arc<Detached<StreamConsumer>>,
-    producer: FutureProducer,
+    /// The server's writer, which every reply and `opened` is produced through.
+    writes: mpsc::Sender<Record>,
     codec: Codec,
-    /// The link's runtime, which every reply is produced from.
+    /// The link's runtime, which the drain's watcher is spawned on.
     runtime: Tokio,
     calls: Arc<Calls>,
     phase: watch::Sender<Phase>,
@@ -625,7 +654,7 @@ impl ServerSide {
                 let (id, path) = self.hold(key, reply.clone(), correlation.clone());
                 // The caller holds the request's items until this arrives, so they reach the
                 // control topic after the call is held here.
-                if let Err(error) = produce(&self.producer, &reply, correlation.as_deref(), Some(OPENED), &CallHeaders::new(), &[]).await {
+                if let Err(error) = write(&self.writes, reply.clone(), correlation.clone(), Some(OPENED), Bytes::new()).await {
                     tracing::warn!(%error, pattern, "the Kafka link could not acknowledge a streamed request");
                 }
                 self.deliver(Delivery { frame: Frame::Open { id, pattern, headers: call_headers }, reply: Some(path), ack });
@@ -656,25 +685,23 @@ impl ServerSide {
 
     /// Holds a call under `key`, its correlation id, the key its control records carry.
     fn hold(&self, key: String, reply: String, correlation: Option<String>) -> (u64, ReplyPath) {
-        let producer = self.producer.clone();
+        let writes = self.writes.clone();
         let codec = self.codec;
         let calls = Arc::clone(&self.calls);
-        let runtime = self.runtime.clone();
         let released = key.clone();
         let path = ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
-            let producer = producer.clone();
+            let writes = writes.clone();
             let calls = Arc::clone(&calls);
             let reply = reply.clone();
             let correlation = correlation.clone();
             let released = released.clone();
-            let sent = runtime.run(async move {
+            Box::pin(async move {
                 if is_terminal(&frame) {
                     calls.release(&released);
                 }
                 let bytes = codec.encode_frame(&frame)?;
-                produce(&producer, &reply, correlation.as_deref(), None, &CallHeaders::new(), &bytes).await
-            });
-            Box::pin(async move { sent.await? })
+                write(&writes, reply, correlation, None, bytes).await
+            })
         });
         let id = self.calls.hold(key, path.clone());
         (id, path)
@@ -862,14 +889,56 @@ impl Calls {
     }
 }
 
+/// One reply-lane record for the server's writer, its delivery's outcome answered on `answer`.
+struct Record {
+    topic: String,
+    correlation: Option<String>,
+    kind: Option<&'static str>,
+    body: Bytes,
+    answer: oneshot::Sender<Result<(), BoxError>>,
+}
+
+/// The delivery reports a writer waits on while it queues the next records.
+type Delivering = FuturesUnordered<BoxFuture<'static, ()>>;
+
+/// Queues the server's replies with librdkafka one after another, in the order they were queued,
+/// waiting for each delivery report beside the records that follow, until every sender is gone.
+async fn server_writer(producer: FutureProducer, mut queued: mpsc::Receiver<Record>) {
+    let mut delivering = Delivering::new();
+    loop {
+        let Record { topic, correlation, kind, body, answer } = tokio::select! {
+            record = queued.recv() => match record {
+                Some(record) => record,
+                None => break,
+            },
+            Some(()) = delivering.next(), if !delivering.is_empty() => continue,
+        };
+        match produce(&producer, &topic, correlation.as_deref(), kind, &CallHeaders::new(), &body).await {
+            Ok(delivery) => delivering.push(Box::pin(async move {
+                let _ = answer.send(delivery.await);
+            })),
+            Err(error) => {
+                let _ = answer.send(Err(error));
+            }
+        }
+    }
+    while delivering.next().await.is_some() {}
+}
+
+/// Queues one reply-lane record on the server's writer and waits for its delivery report.
+async fn write(writes: &mpsc::Sender<Record>, topic: String, correlation: Option<String>, kind: Option<&'static str>, body: Bytes) -> Result<(), BoxError> {
+    let (answer, answered) = oneshot::channel();
+    let gone = || BoxError::from("the Kafka link's server side is closed");
+    writes.send(Record { topic, correlation, kind, body, answer }).await.map_err(|_| gone())?;
+    answered.await.map_err(|_| gone())?
+}
+
 /// The client side: the producer, the reply topic every reply lands on, each call's correlation
 /// id `<id>.<call>`.
 struct ClientSide {
     /// `None` once the link has closed.
     producer: Mutex<Option<FutureProducer>>,
     codec: Codec,
-    /// The link's runtime, which a streamed request's pump is spawned on.
-    runtime: Tokio,
     id: String,
     reply_topic: String,
     calls: Mutex<HashMap<u64, ClientCall>>,
@@ -881,62 +950,170 @@ struct ClientSide {
 
 enum ClientCall {
     Unary,
-    /// A streamed request: its `in`, `in_end` and `cancel` frames wait in `queue` until the server
-    /// acknowledges the `open`, then go out in order.
-    Streaming { gate: Option<oneshot::Sender<()>>, queue: mpsc::UnboundedSender<Frame> },
+    /// A streamed request: until the server acknowledges the `open`, its `in`, `in_end` and
+    /// `cancel` frames wait in `held`, and the writer produces them in order once it does.
+    Streaming { opened: bool, held: VecDeque<Frame> },
+}
+
+const CLOSED: &str = "the Kafka link's client is closed";
+
+/// What the client's writer takes, in order: a frame to send, or the server's `opened` for a
+/// streamed request, which releases the frames held for it.
+enum Job {
+    Send { pattern: Pattern, frame: Frame, answer: oneshot::Sender<Result<(), BoxError>> },
+    Opened(u64),
+}
+
+/// Queues the client's records with librdkafka in the order they were queued, waiting for each
+/// delivery report beside the records that follow, until every sender is gone.
+async fn client_writer(side: Arc<ClientSide>, mut queued: mpsc::Receiver<Job>) {
+    let mut delivering = Delivering::new();
+    loop {
+        let job = tokio::select! {
+            job = queued.recv() => match job {
+                Some(job) => job,
+                None => break,
+            },
+            Some(()) = delivering.next(), if !delivering.is_empty() => continue,
+        };
+        match job {
+            Job::Send { pattern, frame, answer } => side.send(pattern, frame, answer, &mut delivering).await,
+            Job::Opened(call) => {
+                for frame in side.opened(call) {
+                    side.produce_held(call, frame, &mut delivering).await;
+                }
+            }
+        }
+    }
+    while delivering.next().await.is_some() {}
 }
 
 impl ClientSide {
-    async fn send(self: &Arc<Self>, pattern: Pattern, frame: Frame) -> Result<(), BoxError> {
+    async fn send(self: &Arc<Self>, pattern: Pattern, frame: Frame, answer: oneshot::Sender<Result<(), BoxError>>, delivering: &mut Delivering) {
         match frame {
             Frame::Req { id, headers, data, .. } => {
                 lock(&self.calls).insert(id, ClientCall::Unary);
-                let sent = self.produce_request(&pattern, id, &headers, None, data.as_bytes()).await;
-                if sent.is_err() {
-                    lock(&self.calls).remove(&id);
-                }
-                sent
+                let queued = self.produce_request(&pattern, id, &headers, None, data.as_bytes()).await;
+                self.settle(queued, Some(id), answer, delivering);
             }
             Frame::Evt { headers, data, .. } => {
-                let mut record_headers = OwnedHeaders::new();
-                record_headers = append(record_headers, &headers);
+                let record_headers = append(OwnedHeaders::new(), &headers);
                 let record = FutureRecord::to(pattern.as_str()).key(self.id.as_str()).payload(data.as_bytes()).headers(record_headers);
-                deliver(&self.live_producer()?, record, pattern.as_str(), data.len()).await
+                let queued = match self.live_producer() {
+                    Ok(producer) => enqueue(&producer, record, pattern.as_str(), data.len()).await,
+                    Err(error) => Err(error),
+                };
+                self.settle(queued, None, answer, delivering);
             }
             Frame::Open { id, headers, .. } => {
-                let (gate, opened) = oneshot::channel();
-                let (queue, queued) = mpsc::unbounded_channel();
-                lock(&self.calls).insert(id, ClientCall::Streaming { gate: Some(gate), queue });
-                self.runtime.handle().spawn(pump(Arc::clone(self), id, opened, queued));
-                let sent = self.produce_request(&pattern, id, &headers, Some(OPEN), &[]).await;
-                if sent.is_err() {
-                    lock(&self.calls).remove(&id);
-                }
-                sent
+                lock(&self.calls).insert(id, ClientCall::Streaming { opened: false, held: VecDeque::new() });
+                let queued = self.produce_request(&pattern, id, &headers, Some(OPEN), &[]).await;
+                self.settle(queued, Some(id), answer, delivering);
             }
             Frame::In { id, data } => {
                 if data.len() as u64 > MAX_MESSAGE {
-                    return Err(Box::new(FrameTooLarge { size: data.len() as u64, limit: MAX_MESSAGE }));
+                    let _ = answer.send(Err(Box::new(FrameTooLarge { size: data.len() as u64, limit: MAX_MESSAGE })));
+                    return;
                 }
-                self.enqueue(id, Frame::In { id, data });
-                Ok(())
+                self.control(id, Frame::In { id, data }, delivering).await;
+                let _ = answer.send(Ok(()));
             }
             Frame::InEnd { id } => {
-                self.enqueue(id, Frame::InEnd { id });
-                Ok(())
+                self.control(id, Frame::InEnd { id }, delivering).await;
+                let _ = answer.send(Ok(()));
             }
             Frame::Cancel { id } => {
                 let call = lock(&self.calls).remove(&id);
                 match call {
-                    Some(ClientCall::Unary) => self.produce_control(id, CANCEL, &[]).await,
-                    Some(ClientCall::Streaming { queue, .. }) => {
-                        let _ = queue.send(Frame::Cancel { id });
-                        Ok(())
+                    Some(ClientCall::Unary) => {
+                        let queued = self.produce_control(id, CANCEL, &[]).await;
+                        self.settle(queued, None, answer, delivering);
                     }
-                    None => Ok(()),
+                    Some(ClientCall::Streaming { opened: true, .. }) => {
+                        self.produce_held(id, Frame::Cancel { id }, delivering).await;
+                        let _ = answer.send(Ok(()));
+                    }
+                    // The server never acknowledged the `open`, so nothing held is produced.
+                    Some(ClientCall::Streaming { opened: false, .. }) | None => {
+                        let _ = answer.send(Ok(()));
+                    }
                 }
             }
-            other => Err(format!("a client does not send a `{}` frame", other.kind()).into()),
+            other => {
+                let _ = answer.send(Err(format!("a client does not send a `{}` frame", other.kind()).into()));
+            }
+        }
+    }
+
+    /// Answers a produce once its delivery report arrives; a request that failed is forgotten.
+    fn settle(self: &Arc<Self>, queued: Result<Report, BoxError>, call: Option<u64>, answer: oneshot::Sender<Result<(), BoxError>>, delivering: &mut Delivering) {
+        let side = Arc::clone(self);
+        let delivery = match queued {
+            Ok(delivery) => delivery,
+            Err(error) => {
+                if let Some(call) = call {
+                    lock(&side.calls).remove(&call);
+                }
+                let _ = answer.send(Err(error));
+                return;
+            }
+        };
+        delivering.push(Box::pin(async move {
+            let outcome = delivery.await;
+            if outcome.is_err()
+                && let Some(call) = call
+            {
+                lock(&side.calls).remove(&call);
+            }
+            let _ = answer.send(outcome);
+        }));
+    }
+
+    /// A streamed request's `in` or `in_end`: produced once the server has acknowledged the
+    /// `open`, held until then, and dropped for a call that has ended.
+    async fn control(&self, id: u64, frame: Frame, delivering: &mut Delivering) {
+        let held = {
+            let mut calls = lock(&self.calls);
+            match calls.get_mut(&id) {
+                Some(ClientCall::Streaming { opened: false, held }) => {
+                    held.push_back(frame);
+                    return;
+                }
+                Some(ClientCall::Streaming { opened: true, .. }) => frame,
+                _ => return,
+            }
+        };
+        self.produce_held(id, held, delivering).await;
+    }
+
+    /// The frames held for a streamed request the server has now acknowledged, which the writer
+    /// produces before anything queued after the acknowledgment.
+    fn opened(&self, id: u64) -> VecDeque<Frame> {
+        match lock(&self.calls).get_mut(&id) {
+            Some(ClientCall::Streaming { opened, held }) if !*opened => {
+                *opened = true;
+                std::mem::take(held)
+            }
+            _ => VecDeque::new(),
+        }
+    }
+
+    /// Produces one control frame of a streamed request; a failure is logged, as the call's caller
+    /// has gone on.
+    async fn produce_held(&self, call: u64, frame: Frame, delivering: &mut Delivering) {
+        let (kind, body) = match frame {
+            Frame::In { data, .. } => (IN, data.into_bytes()),
+            Frame::InEnd { .. } => (IN_END, Bytes::new()),
+            Frame::Cancel { .. } => (CANCEL, Bytes::new()),
+            _ => return,
+        };
+        match self.produce_control(call, kind, &body).await {
+            Ok(delivery) => delivering.push(Box::pin(async move {
+                if let Err(error) = delivery.await {
+                    tracing::debug!(%error, kind, "the Kafka link could not publish a control frame");
+                }
+            })),
+            Err(error) => tracing::debug!(%error, kind, "the Kafka link could not publish a control frame"),
         }
     }
 
@@ -949,7 +1126,7 @@ impl ClientSide {
     }
 
     /// Keyed by this client's id, so one caller's requests share a partition and stay ordered.
-    async fn produce_request(&self, pattern: &Pattern, call: u64, headers: &CallHeaders, kind: Option<&str>, body: &[u8]) -> Result<(), BoxError> {
+    async fn produce_request(&self, pattern: &Pattern, call: u64, headers: &CallHeaders, kind: Option<&str>, body: &[u8]) -> Result<Report, BoxError> {
         let correlation = self.correlation(call);
         let mut record_headers = OwnedHeaders::new()
             .insert(Header { key: REPLY_TO, value: Some(self.reply_topic.as_str()) })
@@ -959,34 +1136,20 @@ impl ClientSide {
         }
         record_headers = append(record_headers, headers);
         let record = FutureRecord::to(pattern.as_str()).key(self.id.as_str()).payload(body).headers(record_headers);
-        deliver(&self.live_producer()?, record, pattern.as_str(), body.len()).await
+        enqueue(&self.live_producer()?, record, pattern.as_str(), body.len()).await
     }
 
-    async fn produce_control(&self, call: u64, kind: &str, body: &[u8]) -> Result<(), BoxError> {
+    async fn produce_control(&self, call: u64, kind: &str, body: &[u8]) -> Result<Report, BoxError> {
         let correlation = self.correlation(call);
         let record_headers = OwnedHeaders::new()
             .insert(Header { key: CORRELATION, value: Some(correlation.as_str()) })
             .insert(Header { key: KIND, value: Some(kind) });
         let record = FutureRecord::to(CONTROL).key(correlation.as_str()).payload(body).headers(record_headers);
-        deliver(&self.live_producer()?, record, CONTROL, body.len()).await
+        enqueue(&self.live_producer()?, record, CONTROL, body.len()).await
     }
 
     fn live_producer(&self) -> Result<FutureProducer, BoxError> {
-        lock(&self.producer).clone().ok_or_else(|| "the Kafka link's client is closed".into())
-    }
-
-    fn enqueue(&self, id: u64, frame: Frame) {
-        if let Some(ClientCall::Streaming { queue, .. }) = lock(&self.calls).get(&id) {
-            let _ = queue.send(frame);
-        }
-    }
-
-    fn open_gate(&self, id: u64) {
-        if let Some(ClientCall::Streaming { gate, .. }) = lock(&self.calls).get_mut(&id)
-            && let Some(gate) = gate.take()
-        {
-            let _ = gate.send(());
-        }
+        lock(&self.producer).clone().ok_or_else(|| CLOSED.into())
     }
 
     /// Stops the reply router and waits for it to end, the reply consumer leaving its group while
@@ -1013,6 +1176,7 @@ async fn route_replies(
     replies: StreamConsumer,
     frames: mpsc::UnboundedSender<Frame>,
     mut closing: oneshot::Receiver<()>,
+    writes: mpsc::Sender<Job>,
 ) {
     // Held detached, so a router dropped before it ends, its client never closed and the runtime
     // shutting down, still drops the consumer on a thread of its own.
@@ -1033,7 +1197,10 @@ async fn route_replies(
         let headers = record.headers();
         let Some(call) = header(headers, CORRELATION).and_then(|correlation| side.call_of(&correlation)) else { continue };
         if header(headers, KIND).as_deref() == Some(OPENED) {
-            side.open_gate(call);
+            // To the writer, behind the frames already queued.
+            if writes.send(Job::Opened(call)).await.is_err() {
+                break;
+            }
             continue;
         }
         let frame = match side.codec.decode_frame(record.payload().unwrap_or_default()) {
@@ -1053,23 +1220,8 @@ async fn route_replies(
     let _ = drop_detached(replies.into_inner()).await;
 }
 
-/// Publishes one streamed request's control frames once the server has acknowledged its `open`.
-async fn pump(side: Arc<ClientSide>, call: u64, opened: oneshot::Receiver<()>, mut queued: mpsc::UnboundedReceiver<Frame>) {
-    if opened.await.is_err() {
-        return;
-    }
-    while let Some(frame) = queued.recv().await {
-        let (kind, body) = match frame {
-            Frame::In { data, .. } => (IN, data.into_bytes()),
-            Frame::InEnd { .. } => (IN_END, Bytes::new()),
-            Frame::Cancel { .. } => (CANCEL, Bytes::new()),
-            _ => continue,
-        };
-        if let Err(error) = side.produce_control(call, kind, &body).await {
-            tracing::debug!(%error, kind, "the Kafka link could not publish a control frame");
-        }
-    }
-}
+/// A record's delivery report, once librdkafka has queued the record.
+type Report = BoxFuture<'static, Result<(), BoxError>>;
 
 /// One reply-lane record, keyed by the call's correlation id so one call's frames share a
 /// partition and stay ordered.
@@ -1080,7 +1232,7 @@ async fn produce(
     kind: Option<&str>,
     headers: &CallHeaders,
     body: &[u8],
-) -> Result<(), BoxError> {
+) -> Result<Report, BoxError> {
     let mut record_headers = OwnedHeaders::new();
     if let Some(correlation) = correlation {
         record_headers = record_headers.insert(Header { key: CORRELATION, value: Some(correlation) });
@@ -1090,24 +1242,48 @@ async fn produce(
     }
     record_headers = append(record_headers, headers);
     let record = FutureRecord::to(topic).key(correlation.unwrap_or_default()).payload(body).headers(record_headers);
-    deliver(producer, record, topic, body.len()).await
+    enqueue(producer, record, topic, body.len()).await
 }
 
-/// Produces `record` and waits for its delivery report. An unknown topic is the miss signal
-/// where the broker does not auto-create topics; an oversized record is `FrameTooLarge`.
-async fn deliver(producer: &FutureProducer, record: FutureRecord<'_, str, [u8]>, topic: &str, size: usize) -> Result<(), BoxError> {
+/// Queues `record` with librdkafka, waiting up to five seconds for room in its queue, and answers
+/// the record's delivery report. An unknown topic is the miss signal where the broker does not
+/// auto-create topics; an oversized record is `FrameTooLarge`. The queueing is the writer's, in
+/// order; the report is waited on beside the records queued after it.
+async fn enqueue(producer: &FutureProducer, record: FutureRecord<'_, str, [u8]>, topic: &str, size: usize) -> Result<Report, BoxError> {
     if size as u64 > MAX_MESSAGE {
         return Err(Box::new(FrameTooLarge { size: size as u64, limit: MAX_MESSAGE }));
     }
-    match producer.send(record, Timeout::After(Duration::from_secs(5))).await {
-        Ok(_) => Ok(()),
-        Err((KafkaError::MessageProduction(RDKafkaErrorCode::UnknownTopicOrPartition | RDKafkaErrorCode::UnknownTopic), _)) => {
-            Err(Box::new(NoDestination { pattern: topic.to_owned() }))
+    let started = Instant::now();
+    let mut record = record;
+    loop {
+        match producer.send_result(record) {
+            Ok(report) => {
+                let topic = topic.to_owned();
+                return Ok(Box::pin(async move {
+                    match report.await {
+                        Ok(Ok(_)) => Ok(()),
+                        Ok(Err((error, _))) => Err(refused(error, &topic, size)),
+                        Err(_) => Err("the Kafka producer was dropped before the record's delivery report".into()),
+                    }
+                }));
+            }
+            Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), back)) if started.elapsed() < QUEUE_TIMEOUT => {
+                record = back;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err((error, _)) => return Err(refused(error, topic, size)),
         }
-        Err((KafkaError::MessageProduction(RDKafkaErrorCode::MessageSizeTooLarge), _)) => {
-            Err(Box::new(FrameTooLarge { size: size as u64, limit: MAX_MESSAGE }))
+    }
+}
+
+/// A produce librdkafka refused, mapped as `RpcClient` reads a link's refusal.
+fn refused(error: KafkaError, topic: &str, size: usize) -> BoxError {
+    match error {
+        KafkaError::MessageProduction(RDKafkaErrorCode::UnknownTopicOrPartition | RDKafkaErrorCode::UnknownTopic) => {
+            Box::new(NoDestination { pattern: topic.to_owned() })
         }
-        Err((error, _)) => Err(Box::new(error)),
+        KafkaError::MessageProduction(RDKafkaErrorCode::MessageSizeTooLarge) => Box::new(FrameTooLarge { size: size as u64, limit: MAX_MESSAGE }),
+        error => Box::new(error),
     }
 }
 

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ulo::{Bound, Dep, Module, ModuleDef, ModuleIdentity, Runtime};
 
-use crate::client::{RpcClient, ZeroTimeout};
+use crate::client::{RpcClient, UnusableLink, ZeroTimeout};
 use crate::link::Link;
 
 /// Binds `RpcClient` over link `L`, exported, usually keyed so two clients coexist:
@@ -19,6 +19,9 @@ use crate::link::Link;
 /// ```
 ///
 /// The link connects lazily, on the client's first call, so `connect` does no network I/O for it.
+/// The module's init hook calls the link's [`Link::usable`], so a link that can never connect, a
+/// tokio-based one built outside a runtime and given none, fails `connect` as [`UnusableLink`]
+/// naming `.with_handle(..)`, as a server's link fails `listen()`.
 /// The client spawns its tasks on the app's runtime, which also times its calls, reading it as
 /// `Dep<dyn Runtime>`: an app without one, `.timer(..)` alone included, fails `wire()` naming the
 /// missing binding and `.runtime(..)`. The binding's `on_destroy` hook calls the link's `close`,
@@ -67,6 +70,7 @@ impl<L: Link> Module for RpcClientModule<L> {
             let link = Arc::clone(&self.link);
             let closing = Arc::clone(&self.link);
             let timeout = self.timeout;
+            let checked = Arc::clone(&self.link);
             m.singleton(move |runtime: Dep<dyn Runtime>| {
                 let link = Arc::clone(&link);
                 async move { RpcClient::of_module(link, timeout, runtime.into_arc()) }
@@ -78,6 +82,10 @@ impl<L: Link> Module for RpcClientModule<L> {
                         tracing::warn!(%error, link = L::NAME, "the RPC client's link did not close cleanly");
                     }
                 }
+            });
+            m.on_init(move || {
+                let usable = checked.usable().map_err(|source| UnusableLink::of_module(L::NAME, source));
+                async move { usable }
             });
         }
         m.export::<RpcClient>();

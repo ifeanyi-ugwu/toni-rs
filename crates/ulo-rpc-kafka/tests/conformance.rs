@@ -9,17 +9,25 @@
 //!
 //! At most `PARALLEL` brokers run at once: one per scenario, started together, compete for the
 //! host's memory, and a container that runs short can exit before its ready line.
+//!
+//! Beside the suite, one test drives the link through `Link` directly: the server's `close`
+//! commits the group's offsets on a thread of its own, so a frozen broker holds no runtime worker.
 
 #![cfg(feature = "integration")]
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use futures_util::StreamExt;
 
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
-use ulo::BoundAddr;
+use ulo::{App, BoundAddr, Module, ModuleDef, ModuleIdentity, Signal};
+use ulo_rpc::{CallHeaders, Data, Frame, Link, Pattern, ReplyTo};
 use ulo_rpc_conformance::relay::{Outage, Relay, reachable, unshadowed};
 use ulo_rpc_conformance::{Broker, Budget, report, startup_failed};
 use ulo_rpc_kafka::Kafka;
@@ -128,3 +136,89 @@ impl Broker for KraftBroker {
 }
 
 ulo_rpc_conformance::conformance_suite!(KraftBroker);
+
+/// An app with nothing in it, whose handle the server's link is prepared with.
+struct Empty;
+
+impl Module for Empty {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<Self>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        let _ = m;
+    }
+}
+
+/// How long the runtime polling `close` is watched with the broker frozen.
+const FROZEN: Duration = Duration::from_secs(3);
+
+/// The ticks of a 50 ms timer that one second of a free runtime thread allows, at the least.
+const FREE_TICKS: u64 = 20;
+
+/// F370: the server's `close` commits the group's stored offsets synchronously, which blocks the
+/// calling thread until the broker answers, or until librdkafka's request timeout once it cannot.
+/// With an offset stored and the broker's container paused, `close` is polled on a current-thread
+/// runtime beside a task ticking every 50 ms: the commit runs on a thread of its own, so the task
+/// keeps ticking while `close` waits. The broker resumes a second after the watch ends, so a commit
+/// left on the closing thread, which librdkafka holds without bound while the broker is frozen,
+/// ends then and the test reports it.
+#[tokio::test(flavor = "multi_thread")]
+async fn close_commits_off_the_runtime_thread_polling_it() {
+    const PATTERN: &str = "f370.call";
+    let broker = KraftBroker::start().await;
+    let app = App::builder(Empty)
+        .runtime(ulo_tokio::Tokio::current())
+        .wire()
+        .expect("the app wires")
+        .connect()
+        .await
+        .expect("the app connects");
+    let mut server = broker.link();
+    server.prepare(&app.handle()).await.expect("the server's link prepares");
+    let mut inbound = server.listen(&[Pattern::from(PATTERN)]).await.expect("the server's link listens");
+    let client = broker.client_link(&[]);
+    let outbound = client.connect().await.expect("the client's link connects");
+    let request = Frame::Req { id: 1, pattern: PATTERN.to_owned(), headers: CallHeaders::new(), data: Data::new(b"null".as_slice()) };
+    (outbound.send)(Pattern::from(PATTERN), request, Some(ReplyTo { id: 1 })).await.expect("the request is produced");
+    let delivery = tokio::time::timeout(Duration::from_secs(60), inbound.next())
+        .await
+        .expect("the request did not reach the server within a minute")
+        .expect("the server's inbound stream ended");
+    // Stores the record's offset, which the close then commits.
+    delivery.ack.ack();
+    client.close().await.expect("the client's link closes");
+
+    broker._container.pause().await.expect("the broker's container pauses");
+    let ticks = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&ticks);
+    let closing = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("a runtime for the close");
+        runtime.block_on(async move {
+            let ticker = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    counted.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            let started = Instant::now();
+            let _ = tokio::time::timeout(FROZEN, server.close()).await;
+            ticker.abort();
+            started.elapsed()
+        })
+    });
+    // Resumed whatever `close` did, so a commit holding the closing thread ends once the broker
+    // answers it: frozen, librdkafka waits on a synchronous commit without bound.
+    tokio::time::sleep(FROZEN + Duration::from_secs(1)).await;
+    broker._container.unpause().await.expect("the broker's container resumes");
+    let joined = tokio::time::timeout(Duration::from_secs(60), tokio::task::spawn_blocking(move || closing.join()))
+        .await
+        .expect("the closing thread did not end within a minute of the broker resuming");
+    let took = joined.expect("the join completes").expect("the closing thread panicked");
+    let ticked = ticks.load(Ordering::SeqCst);
+    assert!(
+        ticked >= FREE_TICKS,
+        "the runtime polling `close` ran its other task {ticked} times in {took:?} with the broker frozen: the commit held its thread"
+    );
+    let _ = app.close(Signal::new("conformance")).await;
+}

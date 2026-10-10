@@ -1,6 +1,6 @@
 # The RPC conformance suite against a live Kafka, for a local run: CI runs it,
-# with the nats, redis, mqtt and rabbitmq suites, in its `rpc conformance
-# (brokers)` job on every push to master. Needs Docker.
+# with the nats, redis, mqtt and rabbitmq suites, in its `broker integration`
+# job on every push to master. Needs Docker.
 #
 # Each scenario starts a broker of its own. On a host short of memory, set
 # ULO_CONFORMANCE_PARALLEL to bound how many hold one at once; the suite takes

@@ -239,6 +239,7 @@ macro_rules! conformance_suite {
             unhandled_event_is_acknowledged => misses::unhandled_event,
             server_stream_in_order => streams::server_stream,
             client_stream => streams::client_stream,
+            client_stream_in_order => streams::client_stream_in_order,
             bidi_stream => streams::bidi_stream,
             cancel_mid_stream => cancel::mid_stream,
             deadline_ms_fires_deadline => deadlines::deadline_ms,

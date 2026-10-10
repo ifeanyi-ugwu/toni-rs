@@ -20,8 +20,9 @@
 //! The adapter's connections and its subscription task live on the tokio runtime it holds, the one
 //! current where it was built or the one [`Redis::with_handle`] names, so `publish` and the
 //! subscription's stream may be polled on any executor. An adapter built outside a runtime and
-//! given none fails each publish and ends its subscription at once, logged at `error`, naming
-//! `.with_handle(..)`.
+//! given none fails its `prepare`, naming `.with_handle(..)`, so a server serving gateways refuses
+//! to `listen()`. A process that broadcasts and serves no gateway prepares no adapter; there each
+//! publish fails with the same refusal.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,6 +91,11 @@ fn decode(message: &[u8]) -> Option<(Target, Bytes)> {
 }
 
 impl BroadcastAdapter for Redis {
+    /// Refuses an adapter with no tokio runtime, naming `.with_handle(..)`.
+    fn prepare(&self) -> Result<(), BoxError> {
+        self.runtime().map(drop)
+    }
+
     /// A failed publish drops the cached connection, so the next publish connects again. The
     /// connection and the `PUBLISH` run on the adapter's runtime: redis times each answer on
     /// tokio's clock.
@@ -114,16 +120,13 @@ impl BroadcastAdapter for Redis {
     }
 
     /// Runs the subscription on its own task on the adapter's runtime, reconnecting after a second
-    /// when Redis goes away;
-    /// broadcasts published while it is away are lost, as Pub/Sub delivers to subscribers present.
+    /// when Redis goes away; broadcasts published while it is away are lost, as Pub/Sub delivers to
+    /// subscribers present. A server subscribes only once `prepare` has passed, so an adapter
+    /// with no runtime is refused before this; called anyway, it answers a stream that ends at once.
     fn subscribe(&self, node: NodeId) -> BoxStream<'static, (Target, Bytes)> {
         let (sender, receiver) = mpsc::unbounded_channel::<(Target, Bytes)>();
-        let runtime = match self.runtime() {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                tracing::error!(%error, "the Redis broadcast subscription did not start; no broadcast reaches this process");
-                return Box::pin(futures_util::stream::empty());
-            }
+        let Ok(runtime) = self.runtime() else {
+            return Box::pin(futures_util::stream::empty());
         };
         let url = self.url.clone();
         runtime.handle().spawn(async move {

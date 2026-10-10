@@ -53,7 +53,7 @@ jobs:
       # suites on TCP and UDP, the WebSocket and gRPC tests, and ulo-codegen-tests,
       # whose build script runs ulo-build with the vendored protoc. Two targets
       # compile to nothing here: the broker conformance suites carry
-      # `#![cfg(feature = "integration")]` and run in `rpc conformance (brokers)`,
+      # `#![cfg(feature = "integration")]` and run in `broker integration`,
       # and `compile_fail` reports itself ignored off rustc 1.98.1 and runs in
       # `macro diagnostics`.
       - run: cargo test --workspace --locked
@@ -163,13 +163,15 @@ jobs:
       # are compiled, not linted.
       - run: cargo clippy -p ulo-macro-lints --all-targets --no-deps --locked -- -D warnings
 
-  conformance:
-    name: rpc conformance (brokers)
-    # On push, not on pull requests: each suite starts its broker under Docker
-    # through testcontainers, and the image pulls and the compile of six
-    # `integration` test targets cost minutes a pull request does not need to
-    # wait on. One crate per step, so a failure names its broker. The Kafka
-    # suite starts a broker container per scenario, at most four at once.
+  brokers:
+    name: broker integration
+    # The tests that need a live broker: the five broker RPC conformance suites
+    # and the WebSocket Redis adapter's two-process test. On push, not on pull
+    # requests: each starts its broker under Docker through testcontainers, and
+    # the image pulls and the compile of six `integration` test targets cost
+    # minutes a pull request does not need to wait on. One crate per step, so a
+    # failure names its broker. The Kafka suite starts a broker container per
+    # scenario, at most four at once.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

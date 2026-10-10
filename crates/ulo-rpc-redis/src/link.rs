@@ -3,10 +3,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures_util::StreamExt;
 use redis::aio::{ConnectionManager, PubSubSink, PubSubStream};
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 use ulo::{AppHandle, BoxError, BoxFuture};
 use ulo_tokio::Tokio;
@@ -27,12 +28,21 @@ const REPLY: &str = "ulo-reply";
 /// server that unsubscribed its patterns still receives the items of a streamed request it holds.
 const CONTROL: &str = "ulo:rpc:control";
 
+/// Frames queued for one side's writer; a full queue makes the next send wait.
+const WRITE_QUEUE: usize = 64;
+
 /// The Redis link.
+///
+/// Each side publishes through one writer task, fed in order by every send on it, so the frames
+/// a side sends reach Redis in the order they were sent: a request's `in` items before its
+/// `in_end`, and a `cancel` after the request it names. One publisher connection and one Pub/Sub
+/// connection keep that order to the server, the control channel included.
 ///
 /// The link's connections and tasks live on the tokio runtime it holds, the one current where it
 /// was built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may
 /// be polled on any executor or on a plain thread. A link built outside a runtime and given none
-/// refuses in `prepare` and in `connect`.
+/// refuses in `usable`, so a client is refused where it
+/// takes the link and a server's `listen()` fails, and in `connect`.
 pub struct Redis {
     pub(crate) url: String,
     pub(crate) codec: Codec,
@@ -80,9 +90,13 @@ impl Link for Redis {
         Capabilities::new(DeliveryMode::FanOut).binary(self.codec.binary()).ordering(Order::PerChannel).miss_signal(true)
     }
 
+    fn usable(&self) -> Result<(), BoxError> {
+        self.runtime().map(drop)
+    }
+
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
         let _ = app;
-        self.runtime()?;
+        self.usable()?;
         client(&self.url)?;
         Ok(())
     }
@@ -106,9 +120,11 @@ impl Link for Redis {
 
         let (phase, _) = watch::channel(Phase::Serving);
         let (deliveries, inbound) = mpsc::unbounded_channel();
+        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        runtime.handle().spawn(server_writer(publisher, queued));
         let side = Arc::new(ServerSide {
             client,
-            publisher,
+            writes,
             codec: self.codec,
             runtime: runtime.clone(),
             patterns,
@@ -147,12 +163,17 @@ impl Link for Redis {
         let (frames, replies) = mpsc::unbounded_channel();
         let task = runtime.handle().spawn(client_lane(Arc::clone(&side), sink, stream, frames));
         lock(&self.state).client = Some((Arc::clone(&side), task.abort_handle()));
+        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        runtime.handle().spawn(client_writer(side, queued));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
-                let side = Arc::clone(&side);
-                let sent = runtime.run(async move { side.send(pattern, frame).await });
-                Box::pin(async move { sent.await? })
+                let writes = writes.clone();
+                Box::pin(async move {
+                    let (answer, answered) = oneshot::channel();
+                    writes.send(Outgoing { pattern, frame, answer }).await.map_err(|_| BoxError::from(CLOSED))?;
+                    answered.await.map_err(|_| BoxError::from(CLOSED))?
+                })
             }),
             replies: receiver_stream(replies),
         })
@@ -261,13 +282,54 @@ fn server_channels(patterns: &[String], serving: bool) -> Vec<String> {
     channels
 }
 
-/// The server side of a bound link: the publisher replies go through, the Pub/Sub sink the drain
+const CLOSED: &str = "the Redis link's client is closed";
+
+/// One frame for the client's writer, its outcome answered on `answer`.
+struct Outgoing {
+    pattern: Pattern,
+    frame: Frame,
+    answer: oneshot::Sender<Result<(), BoxError>>,
+}
+
+/// Publishes the client's frames one after another, in the order they were queued, until the
+/// connection's send half is dropped.
+async fn client_writer(side: Arc<ClientSide>, mut queued: mpsc::Receiver<Outgoing>) {
+    while let Some(Outgoing { pattern, frame, answer }) = queued.recv().await {
+        let _ = answer.send(side.send(pattern, frame).await);
+    }
+}
+
+/// One message for the server's writer: the channel, the encoded frame, and where the outcome goes.
+struct Publish {
+    channel: String,
+    bytes: Bytes,
+    answer: oneshot::Sender<Result<(), BoxError>>,
+}
+
+/// Publishes the server's replies and refusals one after another, in the order they were queued,
+/// until every sender is gone.
+async fn server_writer(mut publisher: ConnectionManager, mut queued: mpsc::Receiver<Publish>) {
+    while let Some(Publish { channel, bytes, answer }) = queued.recv().await {
+        let _ = answer.send(publish(&mut publisher, &channel, &bytes).await.map(drop));
+    }
+}
+
+/// Queues one message on the server's writer and waits for it to be published.
+async fn write(writes: &mpsc::Sender<Publish>, channel: String, bytes: Bytes) -> Result<(), BoxError> {
+    let (answer, answered) = oneshot::channel();
+    let gone = || BoxError::from("the Redis link's server side is closed");
+    writes.send(Publish { channel, bytes, answer }).await.map_err(|_| gone())?;
+    answered.await.map_err(|_| gone())?
+}
+
+/// The server side of a bound link: the writer replies go through, the Pub/Sub sink the drain
 /// unsubscribes on, and the calls it holds.
 struct ServerSide {
     client: redis::Client,
-    publisher: ConnectionManager,
+    /// The server's writer, which every reply and refusal is published through.
+    writes: mpsc::Sender<Publish>,
     codec: Codec,
-    /// The link's runtime, which every reply is published from.
+    /// The link's runtime, which the drain runs on.
     runtime: Tokio,
     patterns: Vec<String>,
     sink: Mutex<Option<PubSubSink>>,
@@ -371,9 +433,8 @@ impl ServerSide {
     /// the stream ended; dropping it would leave the caller to its own `Timeout`.
     async fn refuse(&self, wire: u64, reply: &str, channel: &str) {
         let error = ErrorBody::new(ErrorKind::Unavailable, "the server is shutting down", Details::new());
-        let mut publisher = self.publisher.clone();
         let refused = match self.codec.encode_frame(&Frame::Err { id: wire, error }) {
-            Ok(bytes) => publish(&mut publisher, reply, &bytes).await.map(|_| ()),
+            Ok(bytes) => write(&self.writes, reply.to_owned(), bytes).await,
             Err(error) => Err(BoxError::from(error)),
         };
         if let Err(error) = refused {
@@ -384,26 +445,23 @@ impl ServerSide {
     /// Holds a call under its wire id, the key its control frames carry. Each reply goes out
     /// under that id, from which the caller recovers its own.
     fn hold(&self, wire: u64, reply: String) -> (u64, ReplyPath) {
-        let publisher = self.publisher.clone();
+        let writes = self.writes.clone();
         let codec = self.codec;
         let calls = Arc::clone(&self.calls);
-        let runtime = self.runtime.clone();
         let key = wire.to_string();
         let released = key.clone();
         let path = ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
-            let mut publisher = publisher.clone();
+            let writes = writes.clone();
             let calls = Arc::clone(&calls);
             let reply = reply.clone();
             let released = released.clone();
-            let sent = runtime.run(async move {
+            Box::pin(async move {
                 if is_terminal(&frame) {
                     calls.release(&released);
                 }
                 let bytes = codec.encode_frame(&with_id(frame, wire))?;
-                publish(&mut publisher, &reply, &bytes).await?;
-                Ok::<_, BoxError>(())
-            });
-            Box::pin(async move { sent.await? })
+                write(&writes, reply, bytes).await
+            })
         });
         let local = self.calls.hold(key, path.clone());
         (local, path)
@@ -465,7 +523,7 @@ struct ClientSide {
 
 impl ClientSide {
     async fn send(&self, pattern: Pattern, frame: Frame) -> Result<(), BoxError> {
-        let mut publisher = lock(&self.publisher).clone().ok_or("the Redis link's client is closed")?;
+        let mut publisher = lock(&self.publisher).clone().ok_or(CLOSED)?;
         match frame {
             Frame::Req { id, pattern: named, headers, data } => {
                 let frame = Frame::Req { id: self.wire(id), pattern: named, headers: self.with_reply(headers), data };

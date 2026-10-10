@@ -1,5 +1,6 @@
 //! The RPC conformance suite over the TCP link, each scenario against a server on a port of its
-//! own, the client reaching it through a relay that `disrupt` cuts.
+//! own, the client reaching it through a relay that `disrupt` cuts. Beside it, the link-level check
+//! that a `cancel` reaches the server after its request, one connection carrying both.
 
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -43,3 +44,8 @@ impl Broker for Loopback {
 }
 
 ulo_rpc_conformance::conformance_suite!(Loopback);
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_follows_its_request() {
+    ulo_rpc_conformance::cases::order::cancel_follows_its_request::<Loopback>().await;
+}

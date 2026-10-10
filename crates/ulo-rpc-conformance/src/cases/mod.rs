@@ -13,6 +13,7 @@ pub mod errors;
 pub mod events;
 pub mod headers;
 pub mod misses;
+pub mod order;
 pub mod payloads;
 pub mod recovery;
 pub mod streams;

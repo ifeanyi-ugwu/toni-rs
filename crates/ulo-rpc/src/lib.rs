@@ -33,7 +33,7 @@ pub mod link;
 #[doc(hidden)]
 pub mod __private;
 
-pub use client::{Call, Emit, RpcClient, RpcError, RpcStream, StreamCall, ZeroTimeout};
+pub use client::{Call, Emit, RpcClient, RpcError, RpcStream, StreamCall, UnusableLink, ZeroTimeout};
 pub use client_module::RpcClientModule;
 pub use codec::Codec;
 pub use extract::{Inbound, Payload};

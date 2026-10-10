@@ -24,6 +24,14 @@ use crate::connection::ConnId;
 /// processes. Set on the module, `WsModule::for_root().broadcast(adapter)`; the module binds it
 /// as `dyn BroadcastAdapter`.
 pub trait BroadcastAdapter: Send + Sync + 'static {
+    /// What the adapter refuses before any I/O: on an adapter tied to a tokio runtime, being built
+    /// outside one and given none. A server serving gateways calls it from its own `prepare`, the
+    /// hand-off on the HTTP server's port and a standalone server alike, so the refusal fails
+    /// `listen()` beside the server's own. Unset, it refuses nothing, as the in-memory adapter.
+    fn prepare(&self) -> Result<(), BoxError> {
+        Ok(())
+    }
+
     /// Sends `frame`, an encoded envelope, to every process's members of `target`.
     fn publish(&self, target: Target, frame: Bytes) -> BoxFuture<'static, Result<(), BoxError>>;
 

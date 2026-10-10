@@ -85,6 +85,39 @@ impl fmt::Display for ZeroTimeout {
 
 impl Error for ZeroTimeout {}
 
+/// A link a client cannot use, refused before any call: its [`Link::usable`] failed, a tokio-based
+/// link built outside a runtime and given none. [`RpcClient::new`] answers it, and
+/// `RpcClientModule`'s init hook fails the app's `connect` with it.
+#[derive(Debug)]
+pub struct UnusableLink {
+    site: &'static str,
+    link: &'static str,
+    source: BoxError,
+}
+
+impl UnusableLink {
+    pub(crate) fn of_module(link: &'static str, source: BoxError) -> Self {
+        UnusableLink { site: "RpcClientModule::for_root", link, source }
+    }
+
+    /// The link's name, `Link::NAME`.
+    pub fn link(&self) -> &'static str {
+        self.link
+    }
+}
+
+impl fmt::Display for UnusableLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`{}` was given a {} link it cannot use: {}", self.site, self.link, self.source)
+    }
+}
+
+impl Error for UnusableLink {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
 /// A client of one link, bound by `RpcClientModule` as `Dep<RpcClient, Billing>` under the
 /// module's qualifier, or built outside an app with [`RpcClient::new`]. Cheap to clone. Its tasks
 /// and every timeout run on the runtime it was given, the app's inside an app; dropping a pending
@@ -164,22 +197,30 @@ impl RpcClient {
     /// calls: five seconds each unless [`timeout`](Self::timeout) or the call sets another.
     ///
     /// ```ignore
-    /// let billing = RpcClient::new(ulo_rpc_tcp::Tcp::new("billing:7000"), Arc::new(ulo_tokio::Tokio::current()))
+    /// let billing = RpcClient::new(ulo_rpc_tcp::Tcp::new("billing:7000"), Arc::new(ulo_tokio::Tokio::current()))?
     ///     .timeout(Bound::After(Duration::from_secs(2)))?;
     /// ```
+    ///
+    /// A link that can never connect is refused here as [`UnusableLink`], where the mistake is
+    /// made, rather than failing each call `Unavailable`: [`Link::usable`] decides, a tokio-based
+    /// link built outside a runtime and given none. Nothing else about the link is checked before
+    /// its first call.
     ///
     /// The client owns the link. Once its last clone and the last call it made are dropped, it
     /// releases its connection and spawns the link's `close` on `runtime`. A runtime that drops
     /// that task before it finishes, as one that has shut down does, leaves the link's close
     /// undone, logged at `warn`.
-    pub fn new<L: Link>(link: L, runtime: Arc<dyn Runtime>) -> Self {
+    pub fn new<L: Link>(link: L, runtime: Arc<dyn Runtime>) -> Result<Self, UnusableLink> {
+        if let Err(source) = link.usable() {
+            return Err(UnusableLink { site: "RpcClient::new", link: L::NAME, source });
+        }
         let link = Arc::new(link);
         let closing = Arc::clone(&link);
         let close: Close = Box::new(move || {
             let link = Arc::clone(&closing);
             Box::pin(async move { link.close().await })
         });
-        RpcClient::build(link, Bound::Default, runtime, Some(close))
+        Ok(RpcClient::build(link, Bound::Default, runtime, Some(close)))
     }
 
     /// `RpcClientModule`'s client, whose link the module's destroy hook closes.
@@ -213,7 +254,7 @@ impl RpcClient {
     /// the connection all the same.
     ///
     /// `Bound::After(Duration::ZERO)`, which would time out every call, is refused as
-    /// [`ZeroTimeout`], and the handle with it, so `RpcClient::new(link, runtime).timeout(b)?`
+    /// [`ZeroTimeout`], and the handle with it, so `RpcClient::new(link, runtime)?.timeout(b)?`
     /// fails on the line that wrote the zero. `RpcClientModule` refuses it when the app wires.
     pub fn timeout(mut self, timeout: Bound) -> Result<Self, ZeroTimeout> {
         if timeout == Bound::After(Duration::ZERO) {

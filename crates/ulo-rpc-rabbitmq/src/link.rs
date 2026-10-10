@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use bytes::Bytes;
 use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use lapin::message::Delivery as AmqpDelivery;
 use lapin::options::{
     BasicAckOptions, BasicCancelOptions, BasicConsumeOptions, BasicPublishOptions, BasicQosOptions, BasicRejectOptions,
@@ -12,7 +13,7 @@ use lapin::options::{
 };
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use lapin::uri::AMQPUri;
-use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, Consumer, ExchangeKind};
+use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, Consumer, ExchangeKind, PublisherConfirm};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use ulo::{AppHandle, BoxError, BoxFuture};
@@ -48,12 +49,21 @@ const REPLY_TO: &str = "amq.rabbitmq.reply-to";
 /// The channel's prefetch when the server's `max_inflight` is `Count::Unlimited`.
 const UNLIMITED_PREFETCH: u16 = 64;
 
+/// Frames queued for one side's writer; a full queue makes the next send wait.
+const WRITE_QUEUE: usize = 64;
+
 /// The RabbitMQ link.
+///
+/// Each side publishes through one writer task, fed in order by every send on it, so the frames a
+/// side sends go out on its channel in the order they were sent: a request's `in` items before its
+/// `in_end`, and a `cancel` after the request it names. A request's lane and the control exchange
+/// are separate queues, so the broker can still deliver a `cancel` ahead of its request.
 ///
 /// The link's connections and tasks live on the tokio runtime it holds, the one current where it
 /// was built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may
 /// be polled on any executor or on a plain thread. A link built outside a runtime and given none
-/// refuses in `prepare` and in `connect`.
+/// refuses in `usable`, so a client is refused where it
+/// takes the link and a server's `listen()` fails, and in `connect`.
 pub struct RabbitMq {
     pub(crate) url: String,
     pub(crate) codec: Codec,
@@ -113,9 +123,13 @@ impl Link for RabbitMq {
             .holds_unserved(true)
     }
 
+    fn usable(&self) -> Result<(), BoxError> {
+        self.runtime().map(drop)
+    }
+
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
         let _ = app;
-        self.runtime()?;
+        self.usable()?;
         uri(&self.url)?;
         Ok(())
     }
@@ -150,9 +164,12 @@ impl Link for RabbitMq {
             .await??;
         let (phase, _) = watch::channel(Phase::Serving);
         let (deliveries, inbound) = mpsc::unbounded_channel();
+        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        runtime.handle().spawn(server_writer(channel.clone(), queued));
         let side = Arc::new(ServerSide {
             connection,
             channel,
+            writes,
             codec: self.codec,
             runtime: runtime.clone(),
             calls: Arc::new(Calls::new()),
@@ -200,19 +217,23 @@ impl Link for RabbitMq {
         let side = Arc::new(ClientSide {
             channel,
             codec: self.codec,
-            runtime: runtime.clone(),
             id: uuid::Uuid::new_v4().simple().to_string(),
             calls: Mutex::new(HashMap::new()),
         });
         lock(&self.state).client = Some((connection, runtime.clone()));
+        let (writes, queued) = mpsc::channel(WRITE_QUEUE);
+        runtime.handle().spawn(client_writer(Arc::clone(&side), queued));
         let (frames, replies_out) = mpsc::unbounded_channel();
-        runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames));
+        runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames, writes.clone()));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
-                let side = Arc::clone(&side);
-                let sent = runtime.run(async move { side.send(pattern, frame).await });
-                Box::pin(async move { sent.await? })
+                let writes = writes.clone();
+                Box::pin(async move {
+                    let (answer, answered) = oneshot::channel();
+                    writes.send(Job::Send { pattern, frame, answer }).await.map_err(|_| BoxError::from(CLOSED))?;
+                    answered.await.map_err(|_| BoxError::from(CLOSED))?
+                })
             }),
             replies: receiver_stream(replies_out),
         })
@@ -324,9 +345,11 @@ async fn subscribe(connection: &Connection, patterns: &[Pattern], prefetch: u16)
 struct ServerSide {
     connection: Connection,
     channel: Channel,
+    /// The server's writer, which every reply and `opened` is published through.
+    writes: mpsc::Sender<Reply>,
     codec: Codec,
-    /// The link's runtime, which every reply is published from and where an `Ack`'s settlement
-    /// runs: `Ack::ack` and `reject` are synchronous, and lapin's acknowledgment is a future.
+    /// The link's runtime, where an `Ack`'s settlement runs: `Ack::ack` and `reject` are
+    /// synchronous, and lapin's acknowledgment is a future.
     runtime: Tokio,
     calls: Arc<Calls>,
     phase: watch::Sender<Phase>,
@@ -379,7 +402,7 @@ impl ServerSide {
                 let (id, path) = self.hold(key, reply.clone(), correlation.clone());
                 // The caller holds the request's items until this arrives, so they reach the
                 // control exchange after the call is held here.
-                if let Err(error) = publish_reply(&self.channel, reply, correlation, Some(OPENED), &[]).await {
+                if let Err(error) = write(&self.writes, reply, correlation, Some(OPENED), Bytes::new()).await {
                     tracing::warn!(%error, pattern, "the RabbitMQ link could not acknowledge a streamed request");
                 }
                 self.deliver(Delivery { frame: Frame::Open { id, pattern, headers: call_headers }, reply: Some(path), ack });
@@ -406,29 +429,53 @@ impl ServerSide {
 
     /// Holds a call under `key`, its `correlation_id`, the key its control messages carry.
     fn hold(&self, key: String, reply: String, correlation: Option<String>) -> (u64, ReplyPath) {
-        let channel = self.channel.clone();
+        let writes = self.writes.clone();
         let codec = self.codec;
         let calls = Arc::clone(&self.calls);
-        let runtime = self.runtime.clone();
         let released = key.clone();
         let path = ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
-            let channel = channel.clone();
+            let writes = writes.clone();
             let calls = Arc::clone(&calls);
             let reply = reply.clone();
             let correlation = correlation.clone();
             let released = released.clone();
-            let sent = runtime.run(async move {
+            Box::pin(async move {
                 if is_terminal(&frame) {
                     calls.release(&released);
                 }
                 let bytes = codec.encode_frame(&frame)?;
-                publish_reply(&channel, reply, correlation, None, &bytes).await
-            });
-            Box::pin(async move { sent.await? })
+                write(&writes, reply, correlation, None, bytes).await
+            })
         });
         let id = self.calls.hold(key, path.clone());
         (id, path)
     }
+}
+
+/// One reply-queue message for the server's writer, its outcome answered on `answer`.
+struct Reply {
+    reply: String,
+    correlation: Option<String>,
+    kind: Option<&'static str>,
+    body: Bytes,
+    answer: oneshot::Sender<Result<(), BoxError>>,
+}
+
+/// Publishes the server's replies one after another, in the order they were queued, until every
+/// sender is gone. The server's channel is not in confirm mode, so each publish is done once lapin
+/// has written it.
+async fn server_writer(channel: Channel, mut queued: mpsc::Receiver<Reply>) {
+    while let Some(Reply { reply, correlation, kind, body, answer }) = queued.recv().await {
+        let _ = answer.send(publish_reply(&channel, reply, correlation, kind, &body).await);
+    }
+}
+
+/// Queues one reply-queue message on the server's writer and waits for it to be published.
+async fn write(writes: &mpsc::Sender<Reply>, reply: String, correlation: Option<String>, kind: Option<&'static str>, body: Bytes) -> Result<(), BoxError> {
+    let (answer, answered) = oneshot::channel();
+    let gone = || BoxError::from("the RabbitMQ link's server side is closed");
+    writes.send(Reply { reply, correlation, kind, body, answer }).await.map_err(|_| gone())?;
+    answered.await.map_err(|_| gone())?
 }
 
 async fn publish_reply(channel: &Channel, reply: String, correlation: Option<String>, kind: Option<&str>, body: &[u8]) -> Result<(), BoxError> {
@@ -507,76 +554,193 @@ impl Calls {
 struct ClientSide {
     channel: Channel,
     codec: Codec,
-    /// The link's runtime, which a streamed request's pump is spawned on.
-    runtime: Tokio,
     id: String,
     calls: Mutex<HashMap<u64, ClientCall>>,
 }
 
 enum ClientCall {
     Unary,
-    /// A streamed request: its `in`, `in_end` and `cancel` frames wait in `queue` until the server
-    /// acknowledges the `open`, then go out in order.
-    Streaming { gate: Option<oneshot::Sender<()>>, queue: mpsc::UnboundedSender<Frame> },
+    /// A streamed request: until the server acknowledges the `open`, its `in`, `in_end` and
+    /// `cancel` frames wait in `held`, and the writer publishes them in order once it does.
+    Streaming { opened: bool, held: VecDeque<Frame> },
+}
+
+const CLOSED: &str = "the RabbitMQ link's client is closed";
+
+/// What the client's writer takes, in order: a frame to send, or the server's `opened` for a
+/// streamed request, which releases the frames held for it.
+enum Job {
+    Send { pattern: Pattern, frame: Frame, answer: oneshot::Sender<Result<(), BoxError>> },
+    Opened(u64),
+}
+
+/// The broker's confirmations the writer waits on while it publishes the next frames.
+type Confirming = FuturesUnordered<BoxFuture<'static, ()>>;
+
+/// Publishes the client's frames in the order they were queued, waiting for each confirmation
+/// beside the publishes that follow, until every sender is gone.
+async fn client_writer(side: Arc<ClientSide>, mut queued: mpsc::Receiver<Job>) {
+    let mut confirming = Confirming::new();
+    loop {
+        let job = tokio::select! {
+            job = queued.recv() => match job {
+                Some(job) => job,
+                None => break,
+            },
+            Some(()) = confirming.next(), if !confirming.is_empty() => continue,
+        };
+        match job {
+            Job::Send { pattern, frame, answer } => side.send(pattern, frame, answer, &mut confirming).await,
+            Job::Opened(call) => {
+                for frame in side.opened(call) {
+                    side.publish_held(call, frame, &mut confirming).await;
+                }
+            }
+        }
+    }
+    while confirming.next().await.is_some() {}
 }
 
 impl ClientSide {
-    async fn send(self: &Arc<Self>, pattern: Pattern, frame: Frame) -> Result<(), BoxError> {
+    async fn send(self: &Arc<Self>, pattern: Pattern, frame: Frame, answer: oneshot::Sender<Result<(), BoxError>>, confirming: &mut Confirming) {
         match frame {
             Frame::Req { id, headers, data, .. } => {
                 lock(&self.calls).insert(id, ClientCall::Unary);
-                let sent = self.publish_request(&pattern, id, &headers, None, data.as_bytes()).await;
-                if sent.is_err() {
-                    lock(&self.calls).remove(&id);
-                }
-                sent
+                let published = self.publish_request(&pattern, id, &headers, None, data.as_bytes()).await;
+                self.settle(published, Some(id), pattern, answer, confirming);
             }
             Frame::Evt { headers, data, .. } => {
                 let mut properties = BasicProperties::default();
                 if let Some(table) = amqp_headers(&headers, None) {
                     properties = properties.with_headers(table);
                 }
-                let confirmation = self
+                let published = self
                     .channel
                     .basic_publish("".into(), pattern.as_str().into(), BasicPublishOptions::default(), data.as_bytes(), properties)
-                    .await?
-                    .await?;
-                if confirmation.is_nack() {
-                    return Err(format!("the RabbitMQ broker refused an event on `{pattern}`").into());
-                }
-                Ok(())
+                    .await;
+                self.settle(published, None, pattern, answer, confirming);
             }
             Frame::Open { id, headers, .. } => {
-                let (gate, opened) = oneshot::channel();
-                let (queue, queued) = mpsc::unbounded_channel();
-                lock(&self.calls).insert(id, ClientCall::Streaming { gate: Some(gate), queue });
-                self.runtime.handle().spawn(pump(Arc::clone(self), id, opened, queued));
-                let sent = self.publish_request(&pattern, id, &headers, Some(OPEN), &[]).await;
-                if sent.is_err() {
-                    lock(&self.calls).remove(&id);
-                }
-                sent
+                lock(&self.calls).insert(id, ClientCall::Streaming { opened: false, held: VecDeque::new() });
+                let published = self.publish_request(&pattern, id, &headers, Some(OPEN), &[]).await;
+                self.settle(published, Some(id), pattern, answer, confirming);
             }
             Frame::In { id, data } => {
-                self.enqueue(id, Frame::In { id, data });
-                Ok(())
+                self.control(id, Frame::In { id, data }, confirming).await;
+                let _ = answer.send(Ok(()));
             }
             Frame::InEnd { id } => {
-                self.enqueue(id, Frame::InEnd { id });
-                Ok(())
+                self.control(id, Frame::InEnd { id }, confirming).await;
+                let _ = answer.send(Ok(()));
             }
             Frame::Cancel { id } => {
                 let call = lock(&self.calls).remove(&id);
                 match call {
-                    Some(ClientCall::Unary) => self.publish_control(id, CANCEL, &[]).await,
-                    Some(ClientCall::Streaming { queue, .. }) => {
-                        let _ = queue.send(Frame::Cancel { id });
-                        Ok(())
+                    Some(ClientCall::Unary) => {
+                        let published = self.publish_control(id, CANCEL, &[]).await;
+                        self.settle(published, None, pattern, answer, confirming);
                     }
-                    None => Ok(()),
+                    Some(ClientCall::Streaming { opened: true, .. }) => {
+                        self.publish_held(id, Frame::Cancel { id }, confirming).await;
+                        let _ = answer.send(Ok(()));
+                    }
+                    // The server never acknowledged the `open`, so nothing held is published.
+                    Some(ClientCall::Streaming { opened: false, .. }) | None => {
+                        let _ = answer.send(Ok(()));
+                    }
                 }
             }
-            other => Err(format!("a client does not send a `{}` frame", other.kind()).into()),
+            other => {
+                let _ = answer.send(Err(format!("a client does not send a `{}` frame", other.kind()).into()));
+            }
+        }
+    }
+
+    /// Answers a publish once the broker confirms it: a refusal or a request returned for want of
+    /// a queue fails it, and a request that failed is forgotten.
+    fn settle(
+        self: &Arc<Self>,
+        published: lapin::Result<PublisherConfirm>,
+        call: Option<u64>,
+        pattern: Pattern,
+        answer: oneshot::Sender<Result<(), BoxError>>,
+        confirming: &mut Confirming,
+    ) {
+        let side = Arc::clone(self);
+        let confirm = match published {
+            Ok(confirm) => confirm,
+            Err(error) => {
+                if let Some(call) = call {
+                    lock(&side.calls).remove(&call);
+                }
+                let _ = answer.send(Err(error.into()));
+                return;
+            }
+        };
+        confirming.push(Box::pin(async move {
+            let outcome = match confirm.await {
+                Ok(confirmation) if confirmation.is_nack() => Err(format!("the RabbitMQ broker refused a frame on `{pattern}`").into()),
+                // Only a request is published `mandatory`, so only a request comes back returned.
+                Ok(confirmation) => match (call, confirmation.take_message()) {
+                    (Some(_), Some(_)) => Err(BoxError::from(NoDestination { pattern: pattern.to_string() })),
+                    _ => Ok(()),
+                },
+                Err(error) => Err(error.into()),
+            };
+            if outcome.is_err()
+                && let Some(call) = call
+            {
+                lock(&side.calls).remove(&call);
+            }
+            let _ = answer.send(outcome);
+        }));
+    }
+
+    /// A streamed request's `in` or `in_end`: published once the server has acknowledged the
+    /// `open`, held until then, and dropped for a call that has ended.
+    async fn control(&self, id: u64, frame: Frame, confirming: &mut Confirming) {
+        let held = {
+            let mut calls = lock(&self.calls);
+            match calls.get_mut(&id) {
+                Some(ClientCall::Streaming { opened: false, held }) => {
+                    held.push_back(frame);
+                    return;
+                }
+                Some(ClientCall::Streaming { opened: true, .. }) => frame,
+                _ => return,
+            }
+        };
+        self.publish_held(id, held, confirming).await;
+    }
+
+    /// The frames held for a streamed request the server has now acknowledged, which the writer
+    /// publishes before anything queued after the acknowledgment.
+    fn opened(&self, id: u64) -> VecDeque<Frame> {
+        match lock(&self.calls).get_mut(&id) {
+            Some(ClientCall::Streaming { opened, held }) if !*opened => {
+                *opened = true;
+                std::mem::take(held)
+            }
+            _ => VecDeque::new(),
+        }
+    }
+
+    /// Publishes one control frame of a streamed request; a failure is logged, as the call's
+    /// caller has gone on.
+    async fn publish_held(&self, call: u64, frame: Frame, confirming: &mut Confirming) {
+        let (kind, body) = match frame {
+            Frame::In { data, .. } => (IN, data.into_bytes()),
+            Frame::InEnd { .. } => (IN_END, Bytes::new()),
+            Frame::Cancel { .. } => (CANCEL, Bytes::new()),
+            _ => return,
+        };
+        match self.publish_control(call, kind, &body).await {
+            Ok(confirm) => confirming.push(Box::pin(async move {
+                if let Err(error) = confirm.await {
+                    tracing::debug!(%error, kind, "the RabbitMQ link could not publish a control frame");
+                }
+            })),
+            Err(error) => tracing::debug!(%error, kind, "the RabbitMQ link could not publish a control frame"),
         }
     }
 
@@ -590,49 +754,28 @@ impl ClientSide {
 
     /// A `mandatory` publish through the default exchange: a queue named after the pattern takes
     /// it, and with none the broker returns it, which is the miss signal.
-    async fn publish_request(&self, pattern: &Pattern, call: u64, headers: &CallHeaders, kind: Option<&str>, body: &[u8]) -> Result<(), BoxError> {
+    async fn publish_request(&self, pattern: &Pattern, call: u64, headers: &CallHeaders, kind: Option<&str>, body: &[u8]) -> lapin::Result<PublisherConfirm> {
         let mut properties = BasicProperties::default().with_reply_to(REPLY_TO.into()).with_correlation_id(self.correlation(call).into());
         if let Some(table) = amqp_headers(headers, kind) {
             properties = properties.with_headers(table);
         }
         let options = BasicPublishOptions { mandatory: true, ..Default::default() };
-        let confirmation = self.channel.basic_publish("".into(), pattern.as_str().into(), options, body, properties).await?.await?;
-        if confirmation.is_nack() {
-            return Err(format!("the RabbitMQ broker refused a request on `{pattern}`").into());
-        }
-        if confirmation.take_message().is_some() {
-            return Err(Box::new(NoDestination { pattern: pattern.to_string() }));
-        }
-        Ok(())
+        self.channel.basic_publish("".into(), pattern.as_str().into(), options, body, properties).await
     }
 
-    async fn publish_control(&self, call: u64, kind: &str, body: &[u8]) -> Result<(), BoxError> {
+    async fn publish_control(&self, call: u64, kind: &str, body: &[u8]) -> lapin::Result<PublisherConfirm> {
         let mut properties = BasicProperties::default().with_correlation_id(self.correlation(call).into());
         if let Some(table) = amqp_headers(&CallHeaders::new(), Some(kind)) {
             properties = properties.with_headers(table);
         }
-        self.channel.basic_publish(CONTROL.into(), "".into(), BasicPublishOptions::default(), body, properties).await?.await?;
-        Ok(())
-    }
-
-    fn enqueue(&self, id: u64, frame: Frame) {
-        if let Some(ClientCall::Streaming { queue, .. }) = lock(&self.calls).get(&id) {
-            let _ = queue.send(frame);
-        }
-    }
-
-    fn open_gate(&self, id: u64) {
-        if let Some(ClientCall::Streaming { gate, .. }) = lock(&self.calls).get_mut(&id)
-            && let Some(gate) = gate.take()
-        {
-            let _ = gate.send(());
-        }
+        self.channel.basic_publish(CONTROL.into(), "".into(), BasicPublishOptions::default(), body, properties).await
     }
 }
 
 /// Routes the direct reply-to deliveries until the consumer ends or fails; either ends the reply
-/// lane, so `RpcClient` fails the calls waiting on it `Unavailable`.
-async fn route_replies(side: Arc<ClientSide>, mut replies: Consumer, frames: mpsc::UnboundedSender<Frame>) {
+/// lane, so `RpcClient` fails the calls waiting on it `Unavailable`. A streamed request's
+/// `opened` goes to the writer, behind the frames already queued.
+async fn route_replies(side: Arc<ClientSide>, mut replies: Consumer, frames: mpsc::UnboundedSender<Frame>, writes: mpsc::Sender<Job>) {
     while let Some(delivery) = replies.next().await {
         let delivery = match delivery {
             Ok(delivery) => delivery,
@@ -643,7 +786,9 @@ async fn route_replies(side: Arc<ClientSide>, mut replies: Consumer, frames: mps
         };
         let Some(call) = delivery.properties.correlation_id().as_ref().and_then(|id| side.call_of(id.as_str())) else { continue };
         if kind_of(delivery.properties.headers().as_ref()).as_deref() == Some(OPENED) {
-            side.open_gate(call);
+            if writes.send(Job::Opened(call)).await.is_err() {
+                break;
+            }
             continue;
         }
         let frame = match side.codec.decode_frame(&delivery.data) {
@@ -658,24 +803,6 @@ async fn route_replies(side: Arc<ClientSide>, mut replies: Consumer, frames: mps
         }
         if frames.send(frame).is_err() {
             break;
-        }
-    }
-}
-
-/// Publishes one streamed request's control frames once the server has acknowledged its `open`.
-async fn pump(side: Arc<ClientSide>, call: u64, opened: oneshot::Receiver<()>, mut queued: mpsc::UnboundedReceiver<Frame>) {
-    if opened.await.is_err() {
-        return;
-    }
-    while let Some(frame) = queued.recv().await {
-        let (kind, body) = match frame {
-            Frame::In { data, .. } => (IN, data.into_bytes()),
-            Frame::InEnd { .. } => (IN_END, Bytes::new()),
-            Frame::Cancel { .. } => (CANCEL, Bytes::new()),
-            _ => continue,
-        };
-        if let Err(error) = side.publish_control(call, kind, &body).await {
-            tracing::debug!(%error, kind, "the RabbitMQ link could not publish a control frame");
         }
     }
 }

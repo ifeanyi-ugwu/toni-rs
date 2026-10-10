@@ -114,9 +114,10 @@ impl GatewayTable {
     ///
     /// Pushes onto `failures`, naming `server`, every zero default, every gateway the table
     /// refuses (a path not starting with `/` or carrying `{param}`, two gateways on one path,
-    /// reserved event names, two handlers for one event, every zero limit), and the absence of
-    /// any `port = own` gateway. The table is built either way; a server reports `failures` and
-    /// binds nothing when any was pushed.
+    /// reserved event names, two handlers for one event, every zero limit), the absence of
+    /// any `port = own` gateway, and the broadcast adapter's own refusal from its `prepare`. The
+    /// table is built either way; a server reports `failures` and binds nothing when any was
+    /// pushed.
     ///
     /// Rooms and broadcasts are the application's `WsModule`'s; an application without one gets
     /// an in-memory adapter of the table's own, which no `Dep<Rooms>` reaches.
@@ -135,6 +136,9 @@ impl GatewayTable {
             .into_iter()
             .find_map(|(_, meta)| meta.hub.clone())
             .unwrap_or_else(|| Arc::new(Hub::new(Arc::new(InMemory::new()))));
+        if let Err(error) = hub.prepare() {
+            failures.push_error(error);
+        }
         GatewayTable::new(gateways, hub, mounted.app().clone(), Arc::clone(mounted.runtime()))
     }
 
