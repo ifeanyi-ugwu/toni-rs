@@ -1,7 +1,7 @@
 //! The standalone WebSocket server for gateways declared `port = own` (transports DESIGN §3.5),
 //! as `ulo-http-hyper` is the HTTP server for `ulo-http`: `ulo-ws` knows the protocol, and this
-//! crate the sockets. An HTTP/1.1 server over hyper and `ulo-hyper-serve`'s accept loop, on tokio,
-//! which answers each upgrade request with `ulo-ws`'s handshake decision and hands each upgraded
+//! crate the sockets. An HTTP/1.1 server over hyper and `ulo-hyper-serve`'s accept loop, which
+//! answers each upgrade request with `ulo-ws`'s handshake decision and hands each upgraded
 //! connection to its driver, which runs it on the app's runtime.
 //!
 //! ```ignore
@@ -9,10 +9,16 @@
 //!     .bind(ulo_ws_hyper::Server::new("0.0.0.0:9001"))
 //!     .listen().await?;
 //! ```
+//!
+//! The runtime is the listener's: [`Server`] accepts on tokio's sockets through
+//! `ulo-listen-tokio`, the default `tokio` feature, and [`ServerOn`] on any other listener, smol's
+//! through `ulo-listen-smol`: `ulo_ws_hyper::ServerOn::<ulo_listen_smol::SmolListener>::new(..)`.
 
 use std::convert::Infallible;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -20,10 +26,9 @@ use futures_util::future::{self, Either};
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
-use hyper_util::rt::{TokioIo, TokioTimer};
 use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, Transport};
 use ulo_http::Upgraded;
-use ulo_hyper_serve::{Accepted, Serve, ServeConfig};
+use ulo_hyper_serve::{Accepted, FuturesIo, Listener, RuntimeTimer, Serve, ServeConfig};
 pub use ulo_hyper_serve::ReadCount;
 use ulo_net::rustls::ServerConfig;
 use ulo_net::{Activation, ActivationError, Endpoint, EndpointSpec, ListenerName, Tls};
@@ -37,7 +42,13 @@ const NAME: &str = "ulo_ws_hyper::Server";
 /// 30 seconds, the HTTP server's own default for both connection clocks.
 const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The core's `Server` for [`Ws`] on its own port: `app.bind(ulo_ws_hyper::Server::new("0.0.0.0:9001"))`.
+/// The standalone server on tokio's sockets, `ulo-listen-tokio`'s listener: the default.
+#[cfg(feature = "tokio")]
+pub type Server = ServerOn<ulo_listen_tokio::TokioListener>;
+
+/// The core's `Server` for [`Ws`] on its own port, accepting through listener `L`, the runtime's
+/// sockets: `app.bind(ulo_ws_hyper::Server::new("0.0.0.0:9001"))` on tokio,
+/// `ulo_ws_hyper::ServerOn::<ulo_listen_smol::SmolListener>::new(..)` on smol.
 ///
 /// `prepare` builds the [`GatewayTable`] of the gateways declared `port = own`, refusing what the
 /// table refuses, a server with no such gateway among it, and every zero limit; it resolves the
@@ -49,7 +60,7 @@ const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 /// hand-off `WsModule` registers. Rooms and broadcasts are the application's `WsModule`'s; an
 /// application binding this server without importing `WsModule` gets an in-memory adapter of the
 /// server's own, which no `Dep<Rooms>` reaches.
-pub struct Server {
+pub struct ServerOn<L: Listener> {
     endpoints: Vec<EndpointSpec>,
     tls: Option<Tls>,
     header_timeout: Bound,
@@ -57,8 +68,9 @@ pub struct Server {
     defaults: GatewayDefaults,
     read_count: ReadCount,
     prepared: Option<Prepared>,
-    running: Option<Running>,
+    running: Option<Running<L>>,
     bound: Vec<BoundAddr>,
+    _listener: PhantomData<fn() -> L>,
 }
 
 /// What `prepare` built for `bind`.
@@ -69,16 +81,16 @@ struct Prepared {
 }
 
 /// What `bind` built for `serve`, `drain` and `close`.
-struct Running {
-    serve: Serve,
+struct Running<L: Listener> {
+    serve: Serve<L>,
     table: GatewayTable,
     http1: http1::Builder,
 }
 
-impl Server {
+impl<L: Listener> ServerOn<L> {
     /// A server on `endpoint`: text parsed in `prepare`, an `Endpoint`, or a `SocketAddr`.
     pub fn new(endpoint: impl Into<EndpointSpec>) -> Self {
-        Server {
+        ServerOn {
             endpoints: vec![endpoint.into()],
             tls: None,
             header_timeout: Bound::Default,
@@ -88,6 +100,7 @@ impl Server {
             prepared: None,
             running: None,
             bound: Vec::new(),
+            _listener: PhantomData,
         }
     }
 
@@ -175,7 +188,7 @@ impl Server {
     }
 }
 
-impl Server {
+impl<L: Listener> ServerOn<L> {
     /// Every endpoint resolved, an inherited one checked against the sockets this process
     /// inherited.
     fn resolve_endpoints(&self, failures: &mut Failures) -> Vec<Endpoint> {
@@ -238,7 +251,7 @@ fn connection_timeout(bound: Bound) -> Option<Duration> {
     }
 }
 
-impl ulo::Server for Server {
+impl<L: Listener> ulo::Server for ServerOn<L> {
     type Transport = Ws;
 
     async fn prepare(&mut self, mounted: Mounted<'_, Ws>) -> Result<(), BoxError> {
@@ -265,7 +278,6 @@ impl ulo::Server for Server {
     }
 
     async fn bind(&mut self, mounted: Mounted<'_, Ws>) -> Result<(), BoxError> {
-        let _ = mounted;
         let Some(Prepared { endpoints, tls, table }) = self.prepared.take() else {
             return Err(BoxError::from("the WebSocket server was bound before it was prepared"));
         };
@@ -273,11 +285,13 @@ impl ulo::Server for Server {
         let addrs: Vec<SocketAddr> = listeners.iter().map(ulo_net::BoundListener::local_addr).collect();
         let secure = tls.is_some();
         let config = ServeConfig { handshake_timeout: connection_timeout(self.handshake_timeout), read_count: self.read_count.clone() };
-        let serve = Serve::new(listeners, tls, &config)?;
+        let serve = Serve::<L>::new(listeners, tls, &config, Arc::clone(mounted.runtime()))?;
         self.bound = addrs.into_iter().map(|addr| BoundAddr::new(<Ws as Transport>::KEY, addr).tls(secure)).collect();
         table.start();
         let mut http1 = http1::Builder::new();
-        http1.timer(TokioTimer::new()).header_read_timeout(connection_timeout(self.header_timeout));
+        http1
+            .timer(RuntimeTimer::new(Arc::clone(mounted.timer())))
+            .header_read_timeout(connection_timeout(self.header_timeout));
         self.running = Some(Running { serve, table, http1 });
         Ok(())
     }
@@ -287,7 +301,7 @@ impl ulo::Server for Server {
             return Err(BoxError::from("the WebSocket server was asked to serve before it was bound"));
         };
         let (table, http1) = (running.table.clone(), running.http1.clone());
-        running.serve.run(move |accepted| connection(accepted, table.clone(), http1.clone())).await
+        running.serve.run(move |accepted| connection::<L>(accepted, table.clone(), http1.clone())).await
     }
 
     /// The accept loop's drain beside the connections': idle ones close with 1001 at once, busy
@@ -312,14 +326,14 @@ impl ulo::Server for Server {
 
 /// One accepted connection: HTTP/1.1 with upgrades until it ends or upgrades, its graceful
 /// shutdown started at the drain.
-async fn connection(accepted: Accepted, table: GatewayTable, http1: http1::Builder) {
-    let Accepted { io, conn, mut draining } = accepted;
+async fn connection<L: Listener>(accepted: Accepted<L>, table: GatewayTable, http1: http1::Builder) {
+    let Accepted { io, conn, draining } = accepted;
     let peer = conn.peer;
     let service = hyper::service::service_fn(move |req: http::Request<Incoming>| {
         let table = table.clone();
         async move { Ok::<_, Infallible>(respond(&table, req, peer).await) }
     });
-    let mut served = pin!(http1.serve_connection(TokioIo::new(io), service).with_upgrades());
+    let mut served = pin!(http1.serve_connection(io, service).with_upgrades());
     // The connection first: once it has ended, a graceful shutdown would have nothing to stop.
     let result = match future::select(served.as_mut(), pin!(draining.wait())).await {
         Either::Left((result, _)) => result,
@@ -341,7 +355,7 @@ async fn respond(table: &GatewayTable, mut req: http::Request<Incoming>, peer: O
     match table.handshake(head, peer).await {
         Handshake::Switch(switch) => {
             let response = switch.response().map(|()| Full::new(Bytes::new()));
-            switch.serve(async move { pending.await.map(|io| Upgraded::from_tokio(TokioIo::new(io))).map_err(BoxError::from) });
+            switch.serve(async move { pending.await.map(|io| Upgraded::from_futures(FuturesIo::new(io))).map_err(BoxError::from) });
             response
         }
         Handshake::Refuse(refusal) => refusal.into_response().map(|reason| Full::new(Bytes::from(reason))),

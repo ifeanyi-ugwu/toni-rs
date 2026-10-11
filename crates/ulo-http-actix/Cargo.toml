@@ -30,7 +30,7 @@ http-body.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-ulo-http-conformance = { path = "../ulo-http-conformance" }
+ulo-http-conformance = { path = "../ulo-http-conformance", features = ["tokio"] }
 # `tests/ws_conformance.rs`: the WebSocket suite, whose gateways on the HTTP port a host without
 # upgrades refuses.
 ulo-ws-conformance = { path = "../ulo-ws-conformance" }

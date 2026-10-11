@@ -1,0 +1,29 @@
+[package]
+name = "ulo-listen-tokio"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The tokio listener for Ulo's hyper servers: tokio sockets, tokio-rustls, and hyper's I/O traits over them"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ulo", "hyper", "tokio", "server", "tls"]
+categories = ["network-programming", "web-programming::http-server"]
+
+[dependencies]
+ulo-http = { path = "../ulo-http" }
+ulo-hyper-serve = { path = "../ulo-hyper-serve" }
+ulo-net = { path = "../ulo-net" }
+# `tokio`: `TokioIo`, hyper's I/O traits over tokio's.
+hyper-util = { workspace = true, features = ["tokio"] }
+# `net`: the listener adopted from `ulo-net`'s socket; `rt`: the check that a tokio runtime is
+# current when it is.
+tokio = { workspace = true, features = ["net", "rt"] }
+tokio-rustls.workspace = true
+
+[dev-dependencies]
+ulo = { path = "../ulo" }
+ulo-tokio = { path = "../ulo-tokio" }
+ulo-test-certs = { path = "../ulo-test-certs" }
+http.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

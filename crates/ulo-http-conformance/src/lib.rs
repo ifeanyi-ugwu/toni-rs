@@ -7,6 +7,7 @@
 //! struct AxumHost { /* the host server, its address, the app */ }
 //!
 //! impl ulo_http_conformance::Host for AxumHost {
+//!     type Harness = ulo_http_conformance::OnTokio;
 //!     async fn start(app: App<Connected>, mode: Mode) -> Self { /* bind Embedded<Axum>, listen, serve the router */ }
 //!     fn base_url(&self) -> String { /* .. */ }
 //!     fn limits() -> EmbedLimits { <ulo_http_axum::Axum as Embed>::limits() }
@@ -17,12 +18,21 @@
 //! ulo_http_conformance::http_conformance_suite!(AxumHost);
 //! ```
 //!
+//! The suite names no runtime. A host's [`Harness`] is its runtime half, as the runtime suite's
+//! and the WebSocket suite's are: the app's runtime, a `block_on` each scenario runs inside, the
+//! listener the reference host accepts on, and the client's connection. Every wait a scenario
+//! makes is bounded by the app's `Timer`, every task it starts is spawned on the app's `Runtime`,
+//! and its client speaks HTTP/1.1 and HTTP/2 through hyper's and `h2`'s client connections over
+//! the stream the harness opens. `OnTokio`, behind the `tokio` feature, is the harness of every
+//! host whose framework runs on tokio; `OnSmol`, behind `smol`, runs the hyper backend's scenarios
+//! on smol with smol's sockets.
+//!
 //! The suite asserts byte-identical responses wherever a scenario depends on no declared limit:
 //! status, the headers the app writes and the body, compared against the reference host in the
-//! same mode. `Routing` is asserted apart, through the header [`ROUTING_HEADER`] a host's test
-//! middleware writes. The limits are checked in both directions: a host that passes a scenario it
-//! declares unsupported fails, and one declaring `forward_miss` that answers a `Forwardable` 404
-//! itself fails the same way.
+//! same mode, on the same runtime. `Routing` is asserted apart, through the header
+//! [`ROUTING_HEADER`] a host's test middleware writes. The limits are checked in both directions:
+//! a host that passes a scenario it declares unsupported fails, and one declaring `forward_miss`
+//! that answers a `Forwardable` 404 itself fails the same way.
 //!
 //! No scenario passes on silence. A request the client's own timeout ends fails the scenario,
 //! since it is neither an answer nor a refusal, and so does a wait for a close or a frame that
@@ -35,10 +45,13 @@
 
 use std::error::Error;
 use std::future::Future;
+use std::io;
+use std::net::SocketAddr;
 use std::time::Duration;
 
-use ulo::App;
+use futures_io::{AsyncRead, AsyncWrite};
 use ulo::app::Connected;
+use ulo::{App, Runtime};
 use ulo_http::Routing;
 use ulo_http::embed::EmbedLimits;
 
@@ -47,15 +60,25 @@ pub mod cases;
 mod count;
 mod failures;
 mod reference;
+#[cfg(feature = "smol")]
+mod smol_harness;
+#[cfg(feature = "tokio")]
+mod tokio_harness;
 mod wire;
 
 #[cfg(feature = "rocket")]
 pub mod rocket_fairing;
 
 pub use app::{HOST_VALUE_HEADER, HostValue, ORIGIN};
-pub use count::{Counted, ReadCount};
+#[cfg(feature = "tokio")]
+pub use count::Counted;
+pub use count::ReadCount;
 pub use failures::failures_dir;
 pub use reference::HyperHost;
+#[cfg(feature = "smol")]
+pub use smol_harness::OnSmol;
+#[cfg(feature = "tokio")]
+pub use tokio_harness::OnTokio;
 
 /// Where the host mounts the app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -78,6 +101,35 @@ pub const PREFIX: &str = "/api";
 /// as [`routing_label`] spells it, since the client sees no response extensions.
 pub const ROUTING_HEADER: &str = "x-ulo-routing";
 
+/// The runtime a host's scenarios run on, as the suite drives it: the app's runtime, the executor
+/// each scenario is run to its end on, the listener the reference host accepts on, and a client
+/// connection to a host.
+pub trait Harness: Send + Sync + 'static {
+    /// The app's runtime, on which the host's connections and the scenario's own waits and tasks
+    /// run.
+    type Runtime: Runtime;
+
+    /// The listener the reference host, the hyper backend, accepts on: this runtime's sockets,
+    /// so a host is compared with the reference on the runtime it runs on.
+    type Listener: ulo_hyper_serve::Listener;
+
+    /// The client end of one connection to a host, on `futures-io`'s traits.
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
+
+    /// A runtime value; each scenario takes its own, built inside the future [`block_on`] runs, so
+    /// a runtime that captures the executor it runs on finds it.
+    ///
+    /// [`block_on`]: Harness::block_on
+    fn runtime() -> Self::Runtime;
+
+    /// Runs `fut` to its end from a plain `#[test]` thread, on an executor that runs the tasks the
+    /// runtime spawns while `fut` waits. Each scenario calls it once.
+    fn block_on<F: Future>(fut: F) -> F::Output;
+
+    /// Opens a TCP connection to `addr`.
+    fn connect(addr: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> + Send;
+}
+
 /// One host the suite runs against: the hyper backend, or an embedding adapter's host framework.
 ///
 /// What `start` sets up, beyond serving the app:
@@ -92,6 +144,10 @@ pub const ROUTING_HEADER: &str = "x-ulo-routing";
 ///   `rocket_fairing::RoutingFairing`;
 /// - the host served through the adapter's `run`, so the app owns the shutdown.
 pub trait Host: Sized + Send + Sync + 'static {
+    /// The runtime the host's scenarios run on; the reference host it is compared with runs on the
+    /// same one.
+    type Harness: Harness;
+
     /// Binds the suite's app, connected and not yet bound, into this host in `mode`, runs
     /// `listen()`, and starts serving it.
     fn start(app: App<Connected>, mode: Mode) -> impl Future<Output = Self> + Send;
@@ -104,7 +160,7 @@ pub trait Host: Sized + Send + Sync + 'static {
 
     /// How many connections the host's server has accepted and read from so far, each counted at
     /// its first read, or `None` from a server that cannot count them. An embedding host wraps
-    /// what its listener accepts with [`ReadCount::wrap`].
+    /// what its listener accepts with `ReadCount::wrap`, behind the `tokio` feature.
     ///
     /// `drain_http1` reads it to know the host has begun reading a connection carrying half a
     /// request before the drain begins: a host closing its listener at the drain resets a
@@ -153,29 +209,50 @@ pub const PARALLEL_VAR: &str = "ULO_CONFORMANCE_PARALLEL";
 #[doc(hidden)]
 pub mod __private {
     use std::num::NonZeroUsize;
-    use std::sync::OnceLock;
-
-    use tokio::sync::{Semaphore, SemaphorePermit};
+    use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 
     pub use crate::failures::startup_failed;
     use crate::PARALLEL_VAR;
 
-    /// The slots one stamped suite's scenarios share, both modes counted together. Each
-    /// `#[tokio::test]` runs its own runtime; tokio's `Semaphore` needs none, so a permit released
-    /// on one wakes a waiter on another.
-    pub struct Slots(OnceLock<Semaphore>);
+    /// The slots one stamped suite's scenarios share, both modes counted together. Each scenario
+    /// runs on its own test thread, so a slot is waited for by blocking that thread before the
+    /// scenario's runtime starts.
+    pub struct Slots {
+        held: Mutex<usize>,
+        freed: Condvar,
+    }
 
     impl Slots {
         pub const fn new() -> Self {
-            Slots(OnceLock::new())
+            Slots { held: Mutex::new(0), freed: Condvar::new() }
         }
 
-        /// A slot when [`PARALLEL_VAR`] bounds the suite, held until the permit drops; `None`
+        /// A slot when [`PARALLEL_VAR`] bounds the suite, held until the guard drops; `None`
         /// otherwise.
-        pub async fn hold(&'static self) -> Option<SemaphorePermit<'static>> {
+        pub fn hold(&'static self) -> Option<Slot> {
             let parallel = host_parallel()?;
-            let slots = self.0.get_or_init(|| Semaphore::new(parallel.get()));
-            Some(slots.acquire().await.expect("the suite's slots are never closed"))
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            while *held >= parallel.get() {
+                held = self.freed.wait(held).unwrap_or_else(PoisonError::into_inner);
+            }
+            *held += 1;
+            Some(Slot(self))
+        }
+    }
+
+    impl Default for Slots {
+        fn default() -> Self {
+            Slots::new()
+        }
+    }
+
+    /// One held slot, given back on drop, a scenario's panic included.
+    pub struct Slot(&'static Slots);
+
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            *self.0.held.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+            self.0.freed.notify_one();
         }
     }
 
@@ -195,17 +272,16 @@ pub mod __private {
 }
 
 /// The application every scenario runs: its controller, error handler, upgrade handler and
-/// pre-dispatch entries, wired against the app's runtime, as a host that can do everything takes
-/// it.
-pub async fn app() -> App<Connected> {
-    app_for(EmbedLimits::NONE).await
+/// pre-dispatch entries, wired against `runtime`, as a host that can do everything takes it.
+pub async fn app(runtime: impl Runtime) -> App<Connected> {
+    app_for(EmbedLimits::NONE, runtime).await
 }
 
-/// The suite's application as a host declaring `limits` takes it: without the upgrade handler
-/// where `upgrades` is `false`, which `prepare` would otherwise refuse.
-pub async fn app_for(limits: EmbedLimits) -> App<Connected> {
+/// The suite's application as a host declaring `limits` takes it, on `runtime`: without the
+/// upgrade handler where `upgrades` is `false`, which `prepare` would otherwise refuse.
+pub async fn app_for(limits: EmbedLimits, runtime: impl Runtime) -> App<Connected> {
     App::builder(app::SuiteModule { limits })
-        .runtime(ulo_tokio::Tokio::current())
+        .runtime(runtime)
         .drain_timeout(DRAIN)
         .wire()
         .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not wire: {}", report(&error)))
@@ -227,15 +303,15 @@ pub fn routing_label(routing: &Routing) -> String {
     }
 }
 
-/// Stamps every scenario in both modes as a `#[tokio::test]` for the host type `$host`. The
-/// invoking crate depends on `tokio` with `macros` and `rt-multi-thread`.
+/// Stamps every scenario in both modes as a `#[test]` for the host type `$host`, each running its
+/// scenario through the host's [`Harness::block_on`].
 ///
 /// A scenario that cannot apply to a host is declared with its reason, and stamped
 /// `#[ignore = "not applicable: <reason>"]`, so the test report counts it as ignored rather than
 /// passed:
 ///
 /// ```ignore
-/// ulo_http_conformance::http_conformance_suite!(HyperHost; not_applicable {
+/// ulo_http_conformance::http_conformance_suite!(HyperHost<OnTokio>; not_applicable {
 ///     routing_extension: "the reference has no host around the app to read `Routing`",
 /// });
 /// ```
@@ -255,13 +331,13 @@ macro_rules! http_conformance_suite {
         macro_rules! __ulo_http_conformance_stamp {
             $(
                 ($skip, $d($d test:tt)*) => {
-                    #[::tokio::test(flavor = "multi_thread")]
+                    #[test]
                     #[ignore = concat!("not applicable: ", $why)]
                     $d($d test)*
                 };
             )*
             ($d other:ident, $d($d test:tt)*) => {
-                #[::tokio::test(flavor = "multi_thread")]
+                #[test]
                 $d($d test)*
             };
         }
@@ -294,18 +370,22 @@ macro_rules! http_conformance_suite {
             // A declared name that is no scenario names no function here.
             $(const _: fn() = $skip;)*
             $(
-                __ulo_http_conformance_stamp!($name, async fn $name() {
-                    let _slot = super::__ULO_HTTP_CONFORMANCE_SLOTS.hold().await;
-                    $crate::cases::$module::$case::<$host>($crate::Mode::Nested).await;
+                __ulo_http_conformance_stamp!($name, fn $name() {
+                    let _slot = super::__ULO_HTTP_CONFORMANCE_SLOTS.hold();
+                    <<$host as $crate::Host>::Harness as $crate::Harness>::block_on(
+                        $crate::cases::$module::$case::<$host>($crate::Mode::Nested),
+                    );
                 });
             )*
         }
         mod fallback {
             use super::*;
             $(
-                __ulo_http_conformance_stamp!($name, async fn $name() {
-                    let _slot = super::__ULO_HTTP_CONFORMANCE_SLOTS.hold().await;
-                    $crate::cases::$module::$case::<$host>($crate::Mode::Fallback).await;
+                __ulo_http_conformance_stamp!($name, fn $name() {
+                    let _slot = super::__ULO_HTTP_CONFORMANCE_SLOTS.hold();
+                    <<$host as $crate::Host>::Harness as $crate::Harness>::block_on(
+                        $crate::cases::$module::$case::<$host>($crate::Mode::Fallback),
+                    );
                 });
             )*
         }

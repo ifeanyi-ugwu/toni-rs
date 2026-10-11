@@ -40,8 +40,17 @@ serde_json = { workspace = true, features = ["raw_value"] }
 tracing.workspace = true
 
 [dev-dependencies]
-# The WebSocket conformance suite, which `tests/conformance.rs` runs against the hand-off.
+# The WebSocket conformance suite, which `tests/conformance.rs` runs against the hand-off, and
+# `conformance_smol.rs` and `conformance_pipe.rs` on smol.
 ulo-ws-conformance = { path = "../ulo-ws-conformance" }
+# `smol`: `OnSmol`, the runtime half both smol hosts run their scenarios on.
+ulo-http-conformance = { path = "../ulo-http-conformance", features = ["smol"] }
+ulo-listen-smol = { path = "../ulo-listen-smol" }
+ulo-smol = { path = "../ulo-smol" }
+async-net.workspace = true
+# The pipe host's request heads, and the in-memory pipe it serves a connection over.
+httparse.workspace = true
+piper.workspace = true
 # `tokio-io`: `tests/table.rs` hands the driver one end of a tokio pipe through `Upgraded::from_tokio`.
 ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 # The HTTP server a gateway on the HTTP port is reached through.

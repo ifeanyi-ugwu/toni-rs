@@ -59,6 +59,8 @@ async fn host_middleware<E: Endpoint>(next: E, mut req: poem::Request) -> poem::
 }
 
 impl Host for PoemHost {
+    type Harness = ulo_http_conformance::OnTokio;
+
     async fn start(app: App<Connected>, mode: Mode) -> Self {
         let server = match mode {
             Mode::Nested => Embedded::new().nested_at(PREFIX),

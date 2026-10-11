@@ -1,7 +1,8 @@
 //! The gateway's own tasks run on the app's runtime: the `connection_init_timeout` watch each
 //! connection starts, and the task each `subscribe` streams in. The app's runtime counts what it
 //! is handed; before either, `ulo-ws` has spawned four: broadcast delivery, the gateway's
-//! `AfterInit` (the trait's own, which does nothing), the connection, and the gateway's inbox.
+//! `AfterInit` (the trait's own, which does nothing), the connection, and the gateway's inbox; and
+//! the server two: its accept loop and the connection's HTTP/1.1 task.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -172,13 +173,13 @@ async fn a_subscription_streams_on_the_app_s_runtime() {
     let mut socket = app.connect().await;
     send(&mut socket, json!({ "type": "connection_init" })).await;
     assert_eq!(next(&mut socket).await, json!({ "type": "connection_ack" }));
-    assert_eq!(runtime.spawned(), 5, "`ulo-ws`'s four and the `connection_init_timeout` watch");
+    assert_eq!(runtime.spawned(), 7, "`ulo-ws`'s four, the server's two and the `connection_init_timeout` watch");
 
     send(&mut socket, json!({ "type": "subscribe", "id": "s", "payload": { "query": "subscription { tick }" } })).await;
     assert_eq!(next(&mut socket).await, json!({ "type": "next", "id": "s", "payload": { "data": { "tick": 1 } } }));
     assert_eq!(next(&mut socket).await, json!({ "type": "next", "id": "s", "payload": { "data": { "tick": 2 } } }));
     assert_eq!(next(&mut socket).await, json!({ "type": "complete", "id": "s" }));
-    assert_eq!(runtime.spawned(), 6, "the subscription's task");
+    assert_eq!(runtime.spawned(), 8, "the subscription's task");
 
     hang_up(socket).await;
     app.stop().await;
@@ -199,7 +200,7 @@ async fn the_init_timeout_closes_the_connection_from_the_app_s_runtime() {
     let frame = close.expect("the close frame carries a code");
     assert_eq!(frame.code, CloseCode::from(4408));
     assert_eq!(frame.reason.as_str(), "Connection initialisation timeout");
-    assert_eq!(runtime.spawned(), 5, "`ulo-ws`'s four and the `connection_init_timeout` watch");
+    assert_eq!(runtime.spawned(), 7, "`ulo-ws`'s four, the server's two and the `connection_init_timeout` watch");
     hang_up(socket).await;
     app.stop().await;
 }

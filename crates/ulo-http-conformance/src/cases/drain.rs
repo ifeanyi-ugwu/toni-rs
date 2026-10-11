@@ -2,14 +2,17 @@
 //! answered 503, and the connection closes after it, by `Connection: close` on HTTP/1.1, and on
 //! HTTP/2 by GOAWAY or at the host's stop deadline as its `drain_http2` declares.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use tokio::net::TcpStream;
-use ulo::Signal;
+use http_body_util::Empty;
+use tokio_util::compat::FuturesAsyncReadCompatExt;
+use ulo::{Signal, TaskHandle};
 use ulo_http::embed::{DrainAbandoned, DrainHttp2, DrainPending};
+use ulo_hyper_serve::{FuturesIo, RuntimeExecutor};
 
-use crate::wire::{PATIENCE, Raw, Running, has_header, not_a_timeout, start, status_of};
+use crate::wire::{Failure, PATIENCE, Running, has_header, not_a_timeout, start, status_of, within};
 use crate::{Host, Mode};
 
 /// A request whose head is half written before the shutdown, answered as the host's
@@ -31,7 +34,7 @@ pub async fn http1<H: Host>(mode: Mode) {
              in progress before the drain: declare `drain_http1` not applicable with the reason it cannot count"
         )
     };
-    let mut raw = Raw::connect(&host.authority()).await;
+    let mut raw = host.raw().await;
     raw.write(format!("GET {} HTTP/1.1\r\nHost: suite\r\n", host.target("/hit")).as_bytes()).await;
     host.read_past(counted, "the host's count including the connection carrying half a request").await;
     let closing = begin_close(&host).await;
@@ -70,16 +73,16 @@ pub async fn http1<H: Host>(mode: Mode) {
 /// ends only when the host's own stop deadline cuts it was left waiting in silence.
 pub async fn http2<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
-    let client = reqwest::Client::builder().http2_prior_knowledge().timeout(PATIENCE).build().expect("an HTTP/2 client");
-    let served = client.get(host.url("/hit")).send().await.unwrap_or_else(|error| {
+    let client = H2c::open(&host).await;
+    let served = client.get(&host, "/hit").await.unwrap_or_else(|error| {
         not_a_timeout(&error, "an HTTP/2 request before the drain");
         panic!("the host does not serve HTTP/2 without TLS: declare `drain_http2` not applicable ({error})")
     });
     assert_eq!(served.status().as_u16(), 200, "an HTTP/2 request before the drain");
-    let held = client.get(host.url("/endless")).send().await.expect("the stream opens");
+    let held = client.get(&host, "/endless").await.unwrap_or_else(|error| panic!("the stream opens: {error}"));
     let closing = begin_close(&host).await;
-    let sent = tokio::time::Instant::now();
-    match (client.get(host.url("/hit")).send().await, H::limits().drain_http2) {
+    let sent = host.timer().now();
+    match (client.get(&host, "/hit").await, H::limits().drain_http2) {
         (Ok(response), _) => assert_eq!(response.status().as_u16(), 503, "an HTTP/2 request during the drain was served"),
         (Err(error), DrainHttp2::GoAway) => not_a_timeout(&error, "an HTTP/2 request during the drain"),
         (Err(error), DrainHttp2::Reset) => {
@@ -91,14 +94,51 @@ pub async fn http2<H: Host>(mode: Mode) {
         }
     }
     let window = host.app.drain_timeout();
-    let took = sent.elapsed();
+    let took = host.timer().now().saturating_duration_since(sent);
     assert!(
         took < window / 2,
         "an HTTP/2 request during the drain ended after {took:?} of a {window:?} drain window, neither answered nor refused before then"
     );
     drop(held);
+    drop(client);
     let _ = closing.await;
     host.stop().await;
+}
+
+/// One HTTP/2 connection with prior knowledge, through hyper's client, its tasks on the app's
+/// runtime: what a client holding one connection through the drain sees.
+struct H2c {
+    sender: hyper::client::conn::http2::SendRequest<Empty<Bytes>>,
+}
+
+impl H2c {
+    async fn open<H: Host>(host: &Running<H>) -> H2c {
+        let stream = host.connection().await;
+        let handshake = hyper::client::conn::http2::handshake(RuntimeExecutor::new(Arc::clone(&host.runtime)), FuturesIo::new(stream));
+        let (sender, connection) = within(host.timer(), PATIENCE, handshake)
+            .await
+            .unwrap_or_else(|| panic!("the HTTP/2 handshake did not finish within {PATIENCE:?}, which is neither an answer nor a refusal"))
+            .unwrap_or_else(|error| panic!("the host does not serve HTTP/2 without TLS: declare the scenario not applicable ({error})"));
+        drop(host.runtime.spawn(Box::pin(async move {
+            let _ = connection.await;
+        })));
+        H2c { sender }
+    }
+
+    /// `GET path`, its response head within [`PATIENCE`]; the body is left to the caller.
+    async fn get<H: Host>(&self, host: &Running<H>, path: &str) -> Result<http::Response<hyper::body::Incoming>, Failure> {
+        let request = http::Request::get(host.url(path)).body(Empty::new()).expect("a request");
+        let mut sender = self.sender.clone();
+        let sent = async move {
+            sender.ready().await?;
+            sender.send_request(request).await
+        };
+        match within(host.timer(), PATIENCE, sent).await {
+            None => Err(Failure::TimedOut),
+            Some(Err(error)) => Err(Failure::Failed(error.to_string())),
+            Some(Ok(response)) => Ok(response),
+        }
+    }
 }
 
 /// An HTTP/2 client holds a connection, a stream open on it, through the drain, and the
@@ -108,20 +148,20 @@ pub async fn http2<H: Host>(mode: Mode) {
 /// deadline, no sooner than the drain window, and then fails with no GOAWAY received.
 pub async fn goaway<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
-    let (mut send, _connection) = h2_connect(&host).await;
+    let mut send = h2_connect(&host).await;
     let request = http::Request::get(host.url("/endless")).body(()).expect("a request");
-    send = tokio::time::timeout(PATIENCE, send.ready())
+    send = within(host.timer(), PATIENCE, send.ready())
         .await
         .expect("the connection is ready within the patience")
         .expect("the connection is ready");
     let (response, _) = send.send_request(request, true).expect("the stream opens");
-    let response = tokio::time::timeout(PATIENCE, response)
+    let response = within(host.timer(), PATIENCE, response)
         .await
         .expect("the stream answers within the patience")
         .expect("the stream answers");
     assert_eq!(response.status().as_u16(), 200, "the held stream");
     let mut held = response.into_body();
-    let first = tokio::time::timeout(PATIENCE, held.data()).await.expect("the stream's first event within the patience");
+    let first = within(host.timer(), PATIENCE, held.data()).await.expect("the stream's first event within the patience");
     assert!(first.is_some_and(|chunk| chunk.is_ok()), "the held stream's first event");
 
     let window = host.app.drain_timeout();
@@ -130,21 +170,21 @@ pub async fn goaway<H: Host>(mode: Mode) {
         DrainHttp2::GoAway => PATIENCE,
         DrainHttp2::Reset => window + PATIENCE,
     };
-    let started = tokio::time::Instant::now();
+    let started = host.timer().now();
     let closing = begin_close(&host).await;
     let error = loop {
         match send.clone().ready().await {
             Ok(_) => {
                 assert!(
-                    started.elapsed() < patience,
+                    host.timer().now().saturating_duration_since(started) < patience,
                     "the host declares `{declared:?}` and its connection was neither sent GOAWAY nor ended within {patience:?} of the drain beginning"
                 );
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                host.timer().sleep(Duration::from_millis(20)).await;
             }
             Err(error) => break error,
         }
     };
-    let took = started.elapsed();
+    let took = host.timer().now().saturating_duration_since(started);
     match declared {
         DrainHttp2::GoAway => {
             assert!(
@@ -170,27 +210,29 @@ pub async fn goaway<H: Host>(mode: Mode) {
     host.stop().await;
 }
 
-/// An HTTP/2 connection to the host, driven on its own task until it ends.
-async fn h2_connect<H: Host>(host: &Running<H>) -> (h2::client::SendRequest<Bytes>, tokio::task::JoinHandle<()>) {
-    let tcp = TcpStream::connect(host.authority()).await.expect("the host accepts a connection");
-    let handshake = tokio::time::timeout(PATIENCE, h2::client::handshake(tcp)).await.unwrap_or_else(|_| {
+/// An HTTP/2 connection to the host through `h2` itself, which reports the GOAWAY frame, over the
+/// harness's stream seen through tokio's I/O traits, which are what `h2` reads; driven on a task of
+/// the app's runtime until it ends.
+async fn h2_connect<H: Host>(host: &Running<H>) -> h2::client::SendRequest<Bytes> {
+    let stream = host.connection().await;
+    let handshake = within(host.timer(), PATIENCE, h2::client::handshake(stream.compat())).await.unwrap_or_else(|| {
         panic!("the HTTP/2 handshake did not finish within {PATIENCE:?}, which is neither an answer nor a refusal")
     });
     let (send, connection) =
         handshake.unwrap_or_else(|error| panic!("the host does not serve HTTP/2 without TLS: declare the scenario not applicable ({error})"));
-    let driving = tokio::spawn(async move {
+    drop(host.runtime.spawn(Box::pin(async move {
         let _ = connection.await;
-    });
-    (send, driving)
+    })));
+    send
 }
 
-/// Starts the app's `close` on its own task and waits for the drain to begin.
-async fn begin_close<H: Host>(host: &Running<H>) -> tokio::task::JoinHandle<()> {
+/// Starts the app's `close` on a task of the app's runtime and waits for the drain to begin.
+async fn begin_close<H: Host>(host: &Running<H>) -> TaskHandle {
     let app = host.app.clone();
-    let closing = tokio::spawn(async move {
+    let closing = host.runtime.spawn(Box::pin(async move {
         let _ = app.close(Signal::new("suite")).await;
-    });
-    tokio::time::timeout(PATIENCE, host.app.draining()).await.expect("the drain begins");
+    }));
+    within(host.timer(), PATIENCE, host.app.draining()).await.expect("the drain begins");
     closing
 }
 
@@ -202,19 +244,19 @@ async fn begin_close<H: Host>(host: &Running<H>) -> tokio::task::JoinHandle<()> 
 pub async fn abandoned<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
     let window = host.app.drain_timeout();
-    let mut raw = Raw::connect(&host.authority()).await;
+    let mut raw = host.raw().await;
     let request = format!("GET {} HTTP/1.1\r\nHost: suite\r\nAccept: text/event-stream\r\n\r\n", host.target("/endless"));
     raw.write(request.as_bytes()).await;
     raw.read_until(b"data: start", "the stream's first event").await.expect("the stream's first event arrives");
-    let started = tokio::time::Instant::now();
+    let started = host.timer().now();
     let closing = begin_close(&host).await;
     drop(raw);
     let bound = window + PATIENCE;
-    tokio::time::timeout(bound, closing)
+    let ended = within(host.timer(), bound, closing)
         .await
-        .unwrap_or_else(|_| panic!("the app's `close` had not finished {bound:?} after the drain began"))
-        .expect("the close task completes");
-    let took = started.elapsed();
+        .unwrap_or_else(|| panic!("the app's `close` had not finished {bound:?} after the drain began"));
+    assert!(ended.is_finished(), "the close task completes: it ended {ended:?}");
+    let took = host.timer().now().saturating_duration_since(started);
     match H::limits().drain_abandoned {
         DrainAbandoned::Released => assert!(
             took < window / 2,

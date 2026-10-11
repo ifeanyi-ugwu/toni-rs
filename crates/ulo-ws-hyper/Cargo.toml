@@ -3,19 +3,25 @@ name = "ulo-ws-hyper"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The standalone WebSocket server for Ulo: gateways declared `port = own`, on hyper and tokio"
+description = "The standalone WebSocket server for Ulo: gateways declared `port = own`, on hyper and the listener of the app's runtime"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords = ["ulo", "websocket", "hyper", "server"]
 categories = ["web-programming::websocket", "network-programming"]
 
+[features]
+default = ["tokio"]
+# The tokio listener and the `Server` alias over it. Off, the server takes the listener a caller
+# names, `ServerOn<L>`, and no tokio runtime crate is built.
+tokio = ["dep:ulo-listen-tokio"]
+
 [dependencies]
 ulo = { path = "../ulo" }
-# `tokio-io`: hyper's upgraded connection, on tokio's I/O traits, becomes `ulo-ws`'s `futures-io`
-# stream through `Upgraded::from_tokio`.
-ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
+# `Upgraded`, the `futures-io` stream `ulo-ws`'s driver serves.
+ulo-http = { path = "../ulo-http" }
 ulo-hyper-serve = { path = "../ulo-hyper-serve" }
+ulo-listen-tokio = { path = "../ulo-listen-tokio", optional = true }
 ulo-net = { path = "../ulo-net" }
 ulo-transport = { path = "../ulo-transport" }
 ulo-ws = { path = "../ulo-ws" }
@@ -25,13 +31,19 @@ http.workspace = true
 # The responses' bodies.
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["server", "http1"] }
-hyper-util = { workspace = true, features = ["tokio"] }
 tracing.workspace = true
 
 [dev-dependencies]
 # The WebSocket conformance suite, which `tests/conformance.rs` runs against the server.
 ulo-ws-conformance = { path = "../ulo-ws-conformance" }
+# `tokio-io`: the tests' tokio clients reach the suite as `Upgraded::from_tokio`.
+ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
+# `smol`: `OnSmol`, the runtime half `conformance_smol.rs` runs its scenarios on.
+ulo-http-conformance = { path = "../ulo-http-conformance", features = ["smol"] }
+ulo-listen-smol = { path = "../ulo-listen-smol" }
+ulo-smol = { path = "../ulo-smol" }
 ulo-tokio = { path = "../ulo-tokio" }
+async-net.workspace = true
 # `sink`: the tests write through `SinkExt` on the client's socket.
 futures-util = { workspace = true, features = ["sink"] }
 # The MessagePack gateway's frames, which `messages.rs` encodes and decodes.

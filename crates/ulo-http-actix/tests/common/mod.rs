@@ -31,6 +31,8 @@ pub struct ActixHost<const H2C: bool> {
 }
 
 impl<const H2C: bool> Host for ActixHost<H2C> {
+    type Harness = ulo_http_conformance::OnTokio;
+
     async fn start(app: App<Connected>, mode: Mode) -> Self {
         let server = match mode {
             Mode::Nested => Embedded::new().nested_at(PREFIX),

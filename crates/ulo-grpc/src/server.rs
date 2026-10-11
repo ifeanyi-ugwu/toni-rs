@@ -9,11 +9,12 @@ use std::time::Duration;
 
 use hyper::body::Incoming;
 use hyper::server::conn::http2;
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::rt::{TokioExecutor, TokioTimer};
 use tonic_health::ServingStatus;
 use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, Transport, TypeName};
 use ulo_http::stage::Stage;
 use ulo_hyper_serve::{Accepted, Serve, ServeConfig};
+use ulo_listen_tokio::TokioListener;
 use ulo_net::rustls::ServerConfig;
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::prepare::{Failure, Failures, Names, zero_bound, zero_count};
@@ -73,7 +74,7 @@ pub(crate) struct Prepared {
 
 /// What `bind` built for `serve`, `drain` and `close`.
 pub(crate) struct Running {
-    serve: Serve,
+    serve: Serve<TokioListener>,
     dispatcher: Arc<Dispatcher>,
     connections: Arc<http2::Builder<TokioExecutor>>,
     health: GrpcHealth,
@@ -356,7 +357,6 @@ impl ulo::Server for Server {
     }
 
     async fn bind(&mut self, mounted: Mounted<'_, Grpc>) -> Result<(), BoxError> {
-        let _ = mounted;
         let Some(Prepared { endpoints, tls, dispatcher, health, services }) = self.prepared.take() else {
             return Err(BoxError::from("the gRPC server was bound before it was prepared"));
         };
@@ -368,7 +368,8 @@ impl ulo::Server for Server {
             Bound::After(after) => Some(after),
             Bound::Unbounded => None,
         };
-        let serve = Serve::new(listeners, tls, &ServeConfig { handshake_timeout, ..ServeConfig::default() })?;
+        let config = ServeConfig { handshake_timeout, ..ServeConfig::default() };
+        let serve = Serve::<TokioListener>::new(listeners, tls, &config, Arc::clone(mounted.runtime()))?;
         let mut connections = http2::Builder::new(TokioExecutor::new());
         connections.timer(TokioTimer::new());
         match self.max_concurrent_streams {
@@ -423,15 +424,15 @@ impl ulo::Server for Server {
 
 /// One connection after its handshake: HTTP/2 until it ends, each call answered by the
 /// dispatcher, the connection's graceful shutdown, GOAWAY, started once the drain begins.
-async fn connection(accepted: Accepted, dispatcher: Arc<Dispatcher>, connections: Arc<http2::Builder<TokioExecutor>>) {
-    let Accepted { io, conn, mut draining } = accepted;
+async fn connection(accepted: Accepted<TokioListener>, dispatcher: Arc<Dispatcher>, connections: Arc<http2::Builder<TokioExecutor>>) {
+    let Accepted { io, conn, draining } = accepted;
     let peer = conn.peer;
     let admission = dispatcher.connection();
     let service = hyper::service::service_fn(move |req: http::Request<Incoming>| {
         let reply = Arc::clone(&dispatcher).call(req, conn.clone(), admission.clone());
         async move { Ok::<_, Infallible>(reply.await) }
     });
-    let mut serving = std::pin::pin!(connections.serve_connection(TokioIo::new(io), service));
+    let mut serving = std::pin::pin!(connections.serve_connection(io, service));
     let mut shutting_down = false;
     loop {
         tokio::select! {

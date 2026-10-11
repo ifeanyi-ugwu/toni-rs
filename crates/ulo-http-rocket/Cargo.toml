@@ -23,7 +23,7 @@ tokio = { workspace = true, features = ["io-util", "sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
-ulo-http-conformance = { path = "../ulo-http-conformance", features = ["rocket"] }
+ulo-http-conformance = { path = "../ulo-http-conformance", features = ["rocket", "tokio"] }
 # `tests/ws_conformance.rs`: the WebSocket suite against `WsModule`'s hand-off inside rocket.
 ulo-ws-conformance = { path = "../ulo-ws-conformance" }
 ulo-tokio = { path = "../ulo-tokio" }

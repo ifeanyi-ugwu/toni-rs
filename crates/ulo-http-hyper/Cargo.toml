@@ -10,26 +10,41 @@ homepage.workspace = true
 keywords = ["ulo", "hyper", "web", "framework", "backend"]
 categories = ["web-programming::http-server"]
 
+[features]
+default = ["tokio"]
+# The tokio listener and the `Hyper` and `Server` aliases over it. Off, the backend serves on the
+# listener a caller names, `HyperOn<L>` and `ServerOn<L>`, and no tokio runtime crate is built.
+tokio = ["dep:ulo-listen-tokio"]
+
 [dependencies]
 ulo = { path = "../ulo" }
-# `tokio-io`: hyper's upgraded I/O reaches `Upgraded` through tokio's traits.
-ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
-# The accept loop, the TLS handshake and the drain, shared with the gRPC and WebSocket servers.
+ulo-http = { path = "../ulo-http" }
+# The accept loop, the handshake timeout and the drain, shared with the gRPC and WebSocket servers,
+# and hyper's executor, timer and I/O over the app's runtime.
 ulo-hyper-serve = { path = "../ulo-hyper-serve" }
+ulo-listen-tokio = { path = "../ulo-listen-tokio", optional = true }
 ulo-net = { path = "../ulo-net" }
 ulo-transport = { path = "../ulo-transport" }
+futures-util.workspace = true
 http.workspace = true
-# The connection builders, configured from the server's settings; the per-request upgrade future
-# and its I/O adapter come from the same two crates.
+# The connection builders, configured from the server's settings, and the per-request upgrade
+# future. hyper-util's `auto` builder takes no runtime feature.
 hyper = { workspace = true, features = ["server", "http1", "http2"] }
-hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
-tokio = { workspace = true, features = ["macros"] }
+hyper-util = { workspace = true, features = ["server-auto"] }
 tracing.workspace = true
 
 [dev-dependencies]
-ulo-http-conformance = { path = "../ulo-http-conformance" }
+ulo-http-conformance = { path = "../ulo-http-conformance", features = ["tokio", "smol"] }
+ulo-listen-smol = { path = "../ulo-listen-smol" }
+ulo-smol = { path = "../ulo-smol" }
 ulo-tokio = { path = "../ulo-tokio" }
+async-io.workspace = true
+async-net.workspace = true
+futures.workspace = true
+futures-rustls.workspace = true
 futures-util.workspace = true
+# `dup2` and `fcntl`: `tests/listeners.rs` hands a child process its socket as descriptor 3.
+libc.workspace = true
 # `net` and `io-util`: the raw HTTP/1.1 client the route-timeout tests read a response with.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 # The TLS client `tests/tls.rs` connects with, and the certificate it trusts.

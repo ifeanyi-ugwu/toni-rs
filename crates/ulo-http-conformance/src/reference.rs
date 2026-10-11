@@ -1,29 +1,36 @@
-//! The hyper backend as the reference host: the app on `ulo_http_hyper::Server` at port 0, with h2c
-//! on so the drain's HTTP/2 shape runs against it. A backend owns no host around the app, so in
-//! `Mode::Nested` it serves the app at its root, as a host would after stripping the prefix.
+//! The hyper backend as the reference host: the app on `ulo_http_hyper::ServerOn` at port 0, on
+//! the listener the harness names, with h2c on so the drain's HTTP/2 shape runs against it. A
+//! backend owns no host around the app, so in `Mode::Nested` it serves the app at its root, as a
+//! host would after stripping the prefix.
 
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use futures_channel::oneshot;
 use ulo::app::Connected;
-use ulo::{App, Signal};
+use ulo::{App, Signal, TaskHandle};
 use ulo_http::embed::EmbedLimits;
-use ulo_http_hyper::{Hyper, ReadCount};
+use ulo_http_hyper::{HyperOn, ReadCount, ServerOn};
 
-use crate::{Host, Mode, report};
+use crate::{Harness, Host, Mode, report};
 
-/// The reference host.
-pub struct HyperHost {
+/// The reference host on harness `R`'s runtime and listener: `HyperHost<OnTokio>` on tokio.
+pub struct HyperHost<R: Harness> {
     pub(crate) base_url: String,
     read_count: ReadCount,
     stop: oneshot::Sender<()>,
-    serving: JoinHandle<()>,
+    serving: TaskHandle,
+    _harness: PhantomData<fn() -> R>,
 }
 
-impl Host for HyperHost {
+impl<R: Harness> Host for HyperHost<R> {
+    type Harness = R;
+
     async fn start(app: App<Connected>, _mode: Mode) -> Self {
-        let backend = Hyper::default();
+        let runtime = Arc::clone(app.handle().runtime().expect("the suite's app is given a runtime"));
+        let backend = HyperOn::<R::Listener>::default();
         let read_count = backend.read_count();
-        let server = ulo_http_hyper::Server::with_backend("127.0.0.1:0", backend).h2c(true);
+        let server = ServerOn::<R::Listener>::with_backend("127.0.0.1:0", backend).h2c(true);
         let app = app
             .bind(server)
             .listen()
@@ -31,15 +38,15 @@ impl Host for HyperHost {
             .unwrap_or_else(|error| crate::startup_failed!("the reference host did not listen: {}", report(&error)));
         let addr = app.addresses().first().map(|bound| bound.addr).expect("the reference host is bound");
         let (stop, stopped) = oneshot::channel::<()>();
-        let serving = tokio::spawn(async move {
+        let serving = runtime.spawn(Box::pin(async move {
             let _ = app
                 .serve(async move {
                     let _ = stopped.await;
                     Signal::new("suite")
                 })
                 .await;
-        });
-        HyperHost { base_url: format!("http://{addr}"), read_count, stop, serving }
+        }));
+        HyperHost { base_url: format!("http://{addr}"), read_count, stop, serving, _harness: PhantomData }
     }
 
     fn base_url(&self) -> String {

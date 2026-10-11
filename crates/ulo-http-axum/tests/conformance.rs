@@ -65,6 +65,8 @@ async fn host_middleware(mut req: Request, next: Next) -> Response {
 }
 
 impl Host for AxumHost {
+    type Harness = ulo_http_conformance::OnTokio;
+
     async fn start(app: App<Connected>, mode: Mode) -> Self {
         let server = match mode {
             Mode::Nested => Embedded::new().nested_at(PREFIX),

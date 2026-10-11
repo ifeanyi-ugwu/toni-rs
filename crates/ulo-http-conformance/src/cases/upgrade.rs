@@ -1,6 +1,6 @@
 //! Scenarios: upgrade.
 
-use crate::wire::{Raw, start, status_of};
+use crate::wire::{start, status_of};
 use crate::{Host, Mode};
 
 /// A 101 upgrade with one frame echoed, where the host declares `upgrades`. Where it does not, the
@@ -8,7 +8,7 @@ use crate::{Host, Mode};
 /// protocols.
 pub async fn echo<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
-    let mut raw = Raw::connect(&host.authority()).await;
+    let mut raw = host.raw().await;
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: suite\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
         host.target("/echo")

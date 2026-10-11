@@ -20,6 +20,8 @@ struct RocketHost {
 }
 
 impl Host for RocketHost {
+    type Harness = ulo_http_conformance::OnTokio;
+
     async fn start(app: App<Connected>, mode: Mode) -> Self {
         let server = match mode {
             Mode::Nested => Embedded::new().nested_at(PREFIX),

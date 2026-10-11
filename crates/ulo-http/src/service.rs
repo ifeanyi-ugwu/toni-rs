@@ -15,7 +15,7 @@ use http_body::{Body as _, Frame, SizeHint};
 use tracing::{Instrument, Span, field};
 use ulo::{
     AppHandle, BoxError, BoxFuture, CancelReason, DispatchStage, ExecOptions, Execution, ExecutionRef, MountedHandler,
-    StreamOutcome, Timer, Transport,
+    Runtime, StreamOutcome, Timer, Transport,
 };
 use ulo_transport::{Admission, Permit, span};
 
@@ -91,6 +91,7 @@ pub(crate) struct ServiceInner {
     pub(crate) admission: Admission,
     pub(crate) config: Arc<HttpConfig>,
     pub(crate) timer: Arc<dyn Timer>,
+    pub(crate) runtime: Arc<dyn Runtime>,
     /// The embedding's normalized `.nested_at` prefix; empty for a backend.
     pub(crate) mount: Arc<str>,
     /// The embedding's `Miss::Forward`: a miss on a request nothing has changed is answered
@@ -101,6 +102,13 @@ pub(crate) struct ServiceInner {
 impl AppService {
     pub(crate) fn new(inner: ServiceInner) -> Self {
         AppService { inner: Arc::new(inner) }
+    }
+
+    /// The app's runtime, which a backend spawns its connections, and anything hyper or another
+    /// server library spawns per connection, on: the one every execution of this service runs
+    /// on.
+    pub fn runtime(&self) -> &Arc<dyn Runtime> {
+        &self.inner.runtime
     }
 
     /// Answers one request; never fails, an error being rendered as a response.

@@ -3,7 +3,7 @@ name = "ulo-hyper-serve"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The accept loop Ulo's socket-owning servers share: listeners, TLS handshakes, one task per connection, the drain"
+description = "The accept loop Ulo's hyper servers share: one task per connection, the handshake timeout and the drain, over a listener a runtime crate supplies"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -15,8 +15,23 @@ ulo = { path = "../ulo" }
 # `ConnInfo` and `TlsInfo`, what each accepted connection reports.
 ulo-http = { path = "../ulo-http" }
 ulo-net = { path = "../ulo-net" }
+# `TaskSet`, the connection tasks spawned through the app's runtime, and `Watch`, the drain's
+# signal, neither needing a runtime of its own.
+ulo-transport = { path = "../ulo-transport" }
+futures-io.workspace = true
 http.workspace = true
-# `time`: the accept back-off and the TLS handshake timeout.
-tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }
-tokio-rustls.workspace = true
+# The I/O, executor and timer traits a connection is served through. No features: the protocol
+# builders are the servers'.
+hyper.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+ulo-smol = { path = "../ulo-smol" }
+async-io.workspace = true
+# The sockets the tests' own listeners accept on.
+async-net.workspace = true
+bytes.workspace = true
+futures.workspace = true
+http-body-util.workspace = true
+# The HTTP/1.1 and HTTP/2 connections the tests serve and the client that reads them.
+hyper = { workspace = true, features = ["server", "client", "http1", "http2"] }

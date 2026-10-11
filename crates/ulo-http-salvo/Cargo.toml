@@ -23,7 +23,7 @@ hyper-util = { workspace = true, features = ["tokio"] }
 salvo = { workspace = true, features = ["server", "server-handle", "http1", "http2"] }
 
 [dev-dependencies]
-ulo-http-conformance = { path = "../ulo-http-conformance" }
+ulo-http-conformance = { path = "../ulo-http-conformance", features = ["tokio"] }
 # `tests/ws_conformance.rs`: the WebSocket suite against `WsModule`'s hand-off inside salvo.
 ulo-ws-conformance = { path = "../ulo-ws-conformance" }
 ulo-tokio = { path = "../ulo-tokio" }

@@ -343,6 +343,7 @@ pub(crate) fn prepare_app(
             admission: Admission::new(config.inflight_limit()).retry_after(config.shed_retry_after),
             config,
             timer: Arc::clone(mounted.timer()),
+            runtime: Arc::clone(mounted.runtime()),
             mount: Arc::from(mount),
             forward,
         })

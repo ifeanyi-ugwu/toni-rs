@@ -35,7 +35,7 @@ impl Served {
     async fn start() -> Served {
         let cert = localhost();
         let server = ulo_http_hyper::Server::new("127.0.0.1:0").tls(Tls::from_pem(cert.cert_pem(), cert.key_pem()));
-        let app = ulo_http_conformance::app().await.bind(server).listen().await.expect("the app listens with TLS");
+        let app = ulo_http_conformance::app(ulo_tokio::Tokio::current()).await.bind(server).listen().await.expect("the app listens with TLS");
         let [bound] = app.addresses().try_into().expect("one bound address");
         assert!(bound.tls, "the bound address reports TLS");
         let (stop, stopped) = oneshot::channel::<()>();

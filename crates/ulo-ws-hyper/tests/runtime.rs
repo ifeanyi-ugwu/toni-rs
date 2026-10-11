@@ -1,7 +1,7 @@
-//! Every task the standalone server's connections need is spawned on the app's runtime: broadcast
-//! delivery and each gateway's `AfterInit` once the server is bound, then one task per connection
-//! and one per message; only the accept loop and the HTTP/1.1 handshake run on tokio. The app's
-//! runtime counts what it is handed.
+//! Every task the standalone server starts is spawned on the app's runtime: broadcast delivery and
+//! each gateway's `AfterInit` once the server is bound, the accept loop once it serves, then per
+//! connection the HTTP/1.1 exchange's task and, with its 101, the WebSocket connection's, and one
+//! task per message. The app's runtime counts what it is handed.
 
 mod support;
 
@@ -14,7 +14,7 @@ use ulo::{BoxFuture, Dep, Module, ModuleDef, ModuleIdentity, Spawn, TaskHandle, 
 use ulo_tokio::Tokio;
 use ulo_ws::{AfterInit, GatewayRef, WsModule};
 
-use support::{Record, Running, hang_up, next_json, send_json};
+use support::{Record, Running, hang_up, next_json, send_json, within};
 
 /// Tokio, counting each task it is handed.
 #[derive(Clone)]
@@ -94,13 +94,21 @@ async fn spawns_on_the_app_s_runtime(server: impl ulo::Server, path: &str) {
     let inits = Inits(Record::new());
     let app = Running::start_on(Root { inits: inits.clone() }, server, runtime.clone()).await;
     assert_eq!(inits.0.at_least(1, "the gateway's `AfterInit`").await, vec![path.to_owned()]);
-    assert_eq!(runtime.spawned(), 2, "broadcast delivery and `AfterInit`, spawned once the server was bound");
+    // The accept loop starts with `serve`, which runs on its own task beside the bound app, so it
+    // is waited for rather than read at once.
+    within("the accept loop's task", async {
+        while runtime.spawned() < 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert_eq!(runtime.spawned(), 3, "broadcast delivery, `AfterInit` and the server's accept loop");
 
     let mut socket = app.connect(path, &[]).await;
-    assert_eq!(runtime.spawned(), 3, "the connection's task, spawned with its 101");
+    assert_eq!(runtime.spawned(), 5, "the HTTP connection's task, spawned at the accept, and the WebSocket connection's, spawned with its 101");
     send_json(&mut socket, &json!({ "event": "ping", "id": 1 })).await;
     assert_eq!(next_json(&mut socket).await, json!({ "id": 1, "data": "pong" }));
-    assert_eq!(runtime.spawned(), 4, "the message's task");
+    assert_eq!(runtime.spawned(), 6, "the message's task");
 
     hang_up(socket).await;
     app.stop().await;

@@ -2,7 +2,7 @@
 
 use ulo::Signal;
 
-use crate::wire::{PATIENCE, client, not_a_timeout, start};
+use crate::wire::{Exchange, PATIENCE, not_a_timeout, start, within};
 use crate::{Host, Mode};
 
 /// After `close`, the app answers nothing as if it were serving: the host has stopped with it,
@@ -13,16 +13,15 @@ use crate::{Host, Mode};
 /// app listens, and an adapter's `run` serves the host only after that.
 pub async fn unavailable<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
-    let url = host.url("/hit");
-    let closed = tokio::time::timeout(PATIENCE, host.app.close(Signal::new("suite"))).await;
-    assert!(closed.is_ok(), "the app did not close within {PATIENCE:?}");
-    match client().get(&url).send().await {
+    let closed = within(host.timer(), PATIENCE, host.app.close(Signal::new("suite"))).await;
+    assert!(closed.is_some(), "the app did not close within {PATIENCE:?}");
+    match host.request(&Exchange::get("/hit")).await {
         Ok(response) => {
-            assert_eq!(response.status().as_u16(), 503, "the closed app answered a request");
-            let connection = response.headers().get("connection").and_then(|value| value.to_str().ok());
+            assert_eq!(response.status, 503, "the closed app answered a request");
+            let connection = response.header("connection");
             assert!(connection.is_some_and(|value| value.eq_ignore_ascii_case("close")));
-            if let Some(routing) = response.headers().get(crate::ROUTING_HEADER) {
-                assert_eq!(routing.to_str().ok(), Some("unrouted"));
+            if let Some(routing) = response.routing() {
+                assert_eq!(routing, "unrouted");
             }
         }
         Err(error) => not_a_timeout(&error, "a request after `close`"),

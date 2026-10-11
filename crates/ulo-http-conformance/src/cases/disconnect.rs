@@ -5,7 +5,7 @@ use std::time::Duration;
 use ulo_http::embed::Disconnect;
 
 use crate::app::IDLE;
-use crate::wire::{Raw, start};
+use crate::wire::start;
 use crate::{Host, Mode};
 
 /// How long after the client leaves a host declaring `AtClose` has to observe it, well inside the
@@ -21,13 +21,13 @@ const AT_NEXT_WRITE: Duration = Duration::from_secs(3);
 /// declaring `AtNextWrite` must not, but must once the stream writes again.
 pub async fn mid_stream<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
-    let mut raw = Raw::connect(&host.authority()).await;
+    let mut raw = host.raw().await;
     let request = format!("GET {} HTTP/1.1\r\nHost: suite\r\nAccept: text/event-stream\r\n\r\n", host.target("/endless"));
     raw.write(request.as_bytes()).await;
     raw.read_until(b"data: start", "the stream's first event").await.expect("the stream's first event arrives");
     drop(raw);
 
-    tokio::time::sleep(AT_CLOSE).await;
+    host.timer().sleep(AT_CLOSE).await;
     let early = host.probe.disconnected();
     match H::limits().disconnect {
         Disconnect::AtClose => {
@@ -36,13 +36,13 @@ pub async fn mid_stream<H: Host>(mode: Mode) {
         Disconnect::AtNextWrite => {
             assert!(!early, "the host declares `AtNextWrite` and observed the disconnect before the next write: declare `AtClose`");
             assert!(AT_CLOSE < IDLE);
-            let deadline = tokio::time::Instant::now() + AT_NEXT_WRITE;
+            let deadline = host.timer().now() + AT_NEXT_WRITE;
             while !host.probe.disconnected() {
                 assert!(
-                    tokio::time::Instant::now() < deadline,
+                    host.timer().now() < deadline,
                     "the host declares `AtNextWrite` and did not observe the disconnect after the stream wrote again"
                 );
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                host.timer().sleep(Duration::from_millis(50)).await;
             }
         }
     }

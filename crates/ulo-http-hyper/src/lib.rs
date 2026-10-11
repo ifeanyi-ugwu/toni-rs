@@ -8,6 +8,17 @@
 //! let app = app.bind(ulo_http_hyper::Server::new("0.0.0.0:8080")).listen().await?;
 //! ```
 //!
+//! The runtime is the listener's: [`Server`] serves on tokio's sockets through `ulo-listen-tokio`,
+//! the default `tokio` feature, and [`ServerOn`] on any other listener, smol's through
+//! `ulo-listen-smol`:
+//!
+//! ```ignore
+//! let server = ulo_http_hyper::ServerOn::<ulo_listen_smol::SmolListener>::new("0.0.0.0:8080");
+//! ```
+//!
+//! Either way the connections, HTTP/2's stream tasks and the header-read clock run on the app's
+//! runtime and `Timer`.
+//!
 //! Documented limits: none. HTTP/1.1 and HTTP/2 (h2c when the server enables it), TLS through
 //! `ulo_net::Tls`, inherited sockets, port 0, and per-request upgrades through hyper's upgrade
 //! future.
@@ -22,8 +33,17 @@
 mod backend;
 mod convert;
 
-pub use backend::Hyper;
+pub use backend::HyperOn;
 pub use ulo_hyper_serve::ReadCount;
 
-/// `ulo_http::Server` over hyper: `ulo_http_hyper::Server::new("0.0.0.0:8080")`.
+/// The hyper backend on tokio's sockets, `ulo-listen-tokio`'s listener: the default.
+#[cfg(feature = "tokio")]
+pub type Hyper = HyperOn<ulo_listen_tokio::TokioListener>;
+
+/// `ulo_http::Server` over hyper on tokio: `ulo_http_hyper::Server::new("0.0.0.0:8080")`.
+#[cfg(feature = "tokio")]
 pub type Server = ulo_http::Server<Hyper>;
+
+/// `ulo_http::Server` over hyper on listener `L`, the runtime's sockets:
+/// `ulo_http_hyper::ServerOn::<ulo_listen_smol::SmolListener>::new("0.0.0.0:8080")` on smol.
+pub type ServerOn<L> = ulo_http::Server<HyperOn<L>>;

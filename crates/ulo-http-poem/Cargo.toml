@@ -21,7 +21,7 @@ http-body-util.workspace = true
 poem = { workspace = true, features = ["server"] }
 
 [dev-dependencies]
-ulo-http-conformance = { path = "../ulo-http-conformance" }
+ulo-http-conformance = { path = "../ulo-http-conformance", features = ["tokio"] }
 # `tests/ws_conformance.rs`: the WebSocket suite against `WsModule`'s hand-off inside poem.
 ulo-ws-conformance = { path = "../ulo-ws-conformance" }
 ulo-tokio = { path = "../ulo-tokio" }

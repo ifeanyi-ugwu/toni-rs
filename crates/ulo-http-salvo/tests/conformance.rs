@@ -69,6 +69,8 @@ impl salvo::Handler for HostHoop {
 }
 
 impl Host for SalvoHost {
+    type Harness = ulo_http_conformance::OnTokio;
+
     async fn start(app: App<Connected>, mode: Mode) -> Self {
         let server = match mode {
             Mode::Nested => Embedded::new().nested_at(PREFIX),
@@ -128,7 +130,7 @@ async fn run_refuses_a_closing_from_another_handle() {
     let server = Embedded::new();
     let embedded = server.handle();
     let other = Embedded::new().handle();
-    let app = ulo_http_conformance::app_for(<Salvo as Embed>::limits()).await;
+    let app = ulo_http_conformance::app_for(<Salvo as Embed>::limits(), ulo_tokio::Tokio::current()).await;
     let app = app.bind(server).listen().await.unwrap_or_else(|error| startup_failed!("the app did not listen inside salvo: {}", report(&error)));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
         .unwrap_or_else(|error| startup_failed!("the host did not bind a port: {}", report(&error)));

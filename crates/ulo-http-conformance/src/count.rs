@@ -1,15 +1,21 @@
 //! A count of the connections a host's server has read from, for [`Host::connections_read`]: an
-//! embedding host wraps each stream its listener accepts with [`ReadCount::wrap`] before handing
-//! it to the host framework, as `ulo-hyper-serve` counts for the hyper backend.
+//! embedding host wraps each stream its listener accepts with `ReadCount::wrap` before handing
+//! it to the host framework, as `ulo-hyper-serve` counts for the hyper backend. The wrapper reads
+//! through tokio's I/O traits, behind the `tokio` feature, since every embedding host's framework
+//! runs on tokio.
 //!
 //! [`Host::connections_read`]: crate::Host::connections_read
 
-use std::io;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::{Context, Poll};
+#[cfg(feature = "tokio")]
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
+#[cfg(feature = "tokio")]
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// How many wrapped streams have been read from, each counted at its first read that yields
@@ -24,17 +30,20 @@ impl ReadCount {
     }
 
     /// `stream`, counted here at its first read that yields bytes.
+    #[cfg(feature = "tokio")]
     pub fn wrap<S>(&self, stream: S) -> Counted<S> {
         Counted { stream, unread: Some(self.clone()) }
     }
 }
 
 /// A stream [`ReadCount::wrap`] counts, otherwise the stream it wraps.
+#[cfg(feature = "tokio")]
 pub struct Counted<S> {
     stream: S,
     unread: Option<ReadCount>,
 }
 
+#[cfg(feature = "tokio")]
 impl<S: AsyncRead + Unpin> AsyncRead for Counted<S> {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
@@ -47,6 +56,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for Counted<S> {
     }
 }
 
+#[cfg(feature = "tokio")]
 impl<S: AsyncWrite + Unpin> AsyncWrite for Counted<S> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)

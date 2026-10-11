@@ -558,6 +558,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-net"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b948000fad4873c1c9339d60f2623323a0cfd3816e5181033c6a5cb68b2accf7"
+dependencies = [
+ "async-io",
+ "blocking",
+ "futures-lite",
+]
+
+[[package]]
 name = "async-priority-channel"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2668,7 +2679,6 @@ version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
- "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -2676,9 +2686,7 @@ dependencies = [
  "http-body 1.1.0",
  "httparse",
  "hyper 1.11.1",
- "ipnet",
  "libc",
- "percent-encoding",
  "pin-project-lite",
  "socket2 0.6.5",
  "tokio",
@@ -4523,37 +4531,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "reqwest"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
-dependencies = [
- "base64 0.23.1",
- "bytes",
- "futures-core",
- "h2 0.4.19",
- "http 1.5.0",
- "http-body 1.1.0",
- "http-body-util",
- "hyper 1.11.1",
- "hyper-rustls",
- "hyper-util",
- "js-sys",
- "log",
- "percent-encoding",
- "pin-project-lite",
- "sync_wrapper",
- "tokio",
- "tower",
- "tower-http",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "resolv-conf"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5997,24 +5974,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tower-http"
-version = "0.6.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
-dependencies = [
- "bitflags 2.13.2",
- "bytes",
- "futures-util",
- "http 1.5.0",
- "http-body 1.1.0",
- "pin-project-lite",
- "tower",
- "tower-layer",
- "tower-service",
- "url",
-]
-
-[[package]]
 name = "tower-layer"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6301,6 +6260,7 @@ dependencies = [
  "ulo-grpc-macros",
  "ulo-http",
  "ulo-hyper-serve",
+ "ulo-listen-tokio",
  "ulo-net",
  "ulo-transport",
 ]
@@ -6395,17 +6355,27 @@ dependencies = [
 name = "ulo-http-conformance"
 version = "0.1.0"
 dependencies = [
+ "async-io",
+ "async-net",
  "bytes",
+ "futures-channel",
+ "futures-io",
  "futures-util",
  "h2 0.4.19",
  "http 1.5.0",
- "reqwest",
+ "http-body-util",
+ "hyper 1.11.1",
  "rocket",
  "serde",
  "tokio",
+ "tokio-util",
  "ulo",
  "ulo-http",
  "ulo-http-hyper",
+ "ulo-hyper-serve",
+ "ulo-listen-smol",
+ "ulo-listen-tokio",
+ "ulo-smol",
  "ulo-tokio",
  "ulo-transport",
 ]
@@ -6414,10 +6384,15 @@ dependencies = [
 name = "ulo-http-hyper"
 version = "0.1.0"
 dependencies = [
+ "async-io",
+ "async-net",
+ "futures",
+ "futures-rustls",
  "futures-util",
  "http 1.5.0",
  "hyper 1.11.1",
  "hyper-util",
+ "libc",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -6425,7 +6400,10 @@ dependencies = [
  "ulo-http",
  "ulo-http-conformance",
  "ulo-hyper-serve",
+ "ulo-listen-smol",
+ "ulo-listen-tokio",
  "ulo-net",
+ "ulo-smol",
  "ulo-test-certs",
  "ulo-tokio",
  "ulo-transport",
@@ -6501,13 +6479,54 @@ dependencies = [
 name = "ulo-hyper-serve"
 version = "0.1.0"
 dependencies = [
+ "async-io",
+ "async-net",
+ "bytes",
+ "futures",
+ "futures-io",
  "http 1.5.0",
- "tokio",
- "tokio-rustls",
+ "http-body-util",
+ "hyper 1.11.1",
  "tracing",
  "ulo",
  "ulo-http",
  "ulo-net",
+ "ulo-smol",
+ "ulo-transport",
+]
+
+[[package]]
+name = "ulo-listen-smol"
+version = "0.1.0"
+dependencies = [
+ "async-io",
+ "async-net",
+ "futures",
+ "futures-io",
+ "futures-rustls",
+ "http 1.5.0",
+ "ulo",
+ "ulo-http",
+ "ulo-hyper-serve",
+ "ulo-net",
+ "ulo-smol",
+ "ulo-test-certs",
+]
+
+[[package]]
+name = "ulo-listen-tokio"
+version = "0.1.0"
+dependencies = [
+ "http 1.5.0",
+ "hyper-util",
+ "tokio",
+ "tokio-rustls",
+ "ulo",
+ "ulo-http",
+ "ulo-hyper-serve",
+ "ulo-net",
+ "ulo-test-certs",
+ "ulo-tokio",
 ]
 
 [[package]]
@@ -6805,6 +6824,7 @@ name = "ulo-ws"
 version = "0.1.0"
 dependencies = [
  "async-broadcast",
+ "async-net",
  "async-tungstenite",
  "bytes",
  "event-listener 5.4.1",
@@ -6813,6 +6833,8 @@ dependencies = [
  "futures-io",
  "futures-util",
  "http 1.5.0",
+ "httparse",
+ "piper",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -6821,7 +6843,10 @@ dependencies = [
  "tracing",
  "ulo",
  "ulo-http",
+ "ulo-http-conformance",
  "ulo-http-hyper",
+ "ulo-listen-smol",
+ "ulo-smol",
  "ulo-tokio",
  "ulo-transport",
  "ulo-ws-conformance",
@@ -6846,12 +6871,12 @@ dependencies = [
 name = "ulo-ws-hyper"
 version = "0.1.0"
 dependencies = [
+ "async-net",
  "bytes",
  "futures-util",
  "http 1.5.0",
  "http-body-util",
  "hyper 1.11.1",
- "hyper-util",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -6860,8 +6885,12 @@ dependencies = [
  "tracing",
  "ulo",
  "ulo-http",
+ "ulo-http-conformance",
  "ulo-hyper-serve",
+ "ulo-listen-smol",
+ "ulo-listen-tokio",
  "ulo-net",
+ "ulo-smol",
  "ulo-tokio",
  "ulo-transport",
  "ulo-ws",
@@ -7122,17 +7151,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasm-bindgen-futures"
-version = "0.4.79"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cbab34de2d982e9b48e18d216d04c4a6f641066ff19ffb699980f591ee3610e"
-dependencies = [
- "js-sys",
- "tokio",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "wasm-bindgen-macro"
 version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7248,16 +7266,6 @@ dependencies = [
  "tracing",
  "watchexec-events",
  "watchexec-signals",
-]
-
-[[package]]
-name = "web-sys"
-version = "0.3.106"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88261b9deccee56594c11a3460c462c41f58d148598fe70ad77070126a68aba4"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
 ]
 
 [[package]]

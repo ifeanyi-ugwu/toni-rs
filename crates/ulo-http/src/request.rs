@@ -150,13 +150,14 @@ trait Io: AsyncRead + AsyncWrite + Send + 'static {}
 impl<T: AsyncRead + AsyncWrite + Send + 'static> Io for T {}
 
 impl Upgraded {
-    /// An upgraded connection whose I/O implements `futures-io`'s traits, as smol's does.
+    /// An upgraded connection whose I/O implements `futures-io`'s traits, as smol's does, and
+    /// hyper's through `ulo-hyper-serve`'s `FuturesIo`, which both hyper servers build theirs with.
     pub fn from_futures(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) -> Self {
         Upgraded { io: Box::pin(io) }
     }
 
-    /// An upgraded connection whose I/O implements tokio's traits, as hyper's does through
-    /// `TokioIo`.
+    /// An upgraded connection whose I/O implements tokio's traits, as a tokio socket's does and
+    /// hyper's through hyper-util's `TokioIo`.
     #[cfg(feature = "tokio-io")]
     pub fn from_tokio(io: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static) -> Self {
         use tokio_util::compat::TokioAsyncReadCompatExt;

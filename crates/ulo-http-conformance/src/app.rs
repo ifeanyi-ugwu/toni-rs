@@ -3,16 +3,15 @@
 
 use std::error::Error;
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use futures_util::stream::{self, BoxStream};
+use futures_util::{AsyncReadExt, AsyncWriteExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use ulo::{
-    AnyErrorHandler, BoxError, BoxFuture, CancelReason, Dep, ErrorHandler, Module, ModuleDef, ModuleIdentity,
-    StreamOutcome, injectable, routes,
+    AnyErrorHandler, BoxError, BoxFuture, CancelReason, Dep, ErrorHandler, Module, ModuleDef, ModuleIdentity, Runtime,
+    StreamOutcome, Timer, injectable, routes,
 };
 use ulo_http::embed::EmbedLimits;
 use ulo_http::{
@@ -52,7 +51,7 @@ impl Module for SuiteModule {
         m.meta::<PreDispatch>().apply_value(Cors::new().allow_origin(ORIGIN));
         // A host declaring `upgrades: false` refuses any upgrade handler in `prepare`.
         if self.limits.upgrades {
-            m.meta::<Upgrades>().register(Echo);
+            m.meta::<Upgrades>().register(Echo::default());
         }
     }
 }
@@ -115,7 +114,9 @@ impl ErrorHandler<Http> for Substitute {
 }
 
 #[injectable]
-pub struct Suite;
+pub struct Suite {
+    timer: Dep<dyn Timer>,
+}
 
 #[routes]
 impl Suite {
@@ -163,17 +164,21 @@ impl Suite {
 
     #[ulo_http::get("/endless")]
     fn endless(&self, cx: HttpCx, probe: Dep<Probe>) -> Sse<BoxStream<'static, Event>> {
+        let timer = self.timer.clone();
         let probe = Probe::clone(&probe);
         let exec = cx.exec().clone();
         cx.exec().on_stream_end(move |outcome| probe.record(outcome, exec.cancel_reason()));
         let first = stream::once(async { Event::default().data("start") });
-        let idle = stream::once(async {
-            tokio::time::sleep(IDLE).await;
-            Event::default().data("awake")
+        let idle = stream::once({
+            let timer = timer.clone();
+            async move {
+                timer.sleep(IDLE).await;
+                Event::default().data("awake")
+            }
         });
-        let ticks = stream::unfold((), |()| async {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            Some((Event::default().data("tick"), ()))
+        let ticks = stream::unfold(timer, |timer| async move {
+            timer.sleep(Duration::from_millis(100)).await;
+            Some((Event::default().data("tick"), timer))
         });
         Sse::new(first.chain(idle).chain(ticks).boxed())
     }
@@ -221,23 +226,39 @@ impl Probe {
 }
 
 /// The upgrade handler at `/echo`: answers 101 naming `websocket`, then writes back whatever the
-/// client sends on the upgraded connection. No WebSocket framing is spoken; the scenario checks
-/// the hand-off of the connection, not the protocol.
-struct Echo;
+/// client sends on the upgraded connection, on a task of the app's runtime. No WebSocket framing
+/// is spoken; the scenario checks the hand-off of the connection, not the protocol.
+#[derive(Default)]
+struct Echo {
+    /// The app's runtime, taken when the server prepares.
+    runtime: OnceLock<Arc<dyn Runtime>>,
+}
 
 impl UpgradeHandler for Echo {
     fn paths(&self, _app: &ulo::AppHandle) -> Vec<std::borrow::Cow<'static, str>> {
         vec!["/echo".into()]
     }
 
+    fn prepare(&self, app: &ulo::AppHandle) -> Result<(), BoxError> {
+        let runtime = app.runtime().ok_or("the suite's app has no runtime for the echo's connections")?;
+        let _ = self.runtime.set(Arc::clone(runtime));
+        Ok(())
+    }
+
     fn upgrade(&self, req: Request) -> BoxFuture<'static, Response> {
+        let runtime = self.runtime.get().cloned();
         Box::pin(async move {
             let Some(pending) = req.upgrade else {
                 let mut response = Response::new(HttpBody::from("the host handed over no upgrade"));
                 *response.status_mut() = StatusCode::BAD_REQUEST;
                 return response;
             };
-            tokio::spawn(async move {
+            let Some(runtime) = runtime else {
+                let mut response = Response::new(HttpBody::from("the echo was not prepared"));
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                return response;
+            };
+            drop(runtime.spawn(Box::pin(async move {
                 let Ok(mut io) = pending.await else { return };
                 let mut buffer = [0u8; 64];
                 while let Ok(read) = io.read(&mut buffer).await {
@@ -245,7 +266,7 @@ impl UpgradeHandler for Echo {
                         return;
                     }
                 }
-            });
+            })));
             let mut response = Response::new(HttpBody::empty());
             *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
             let headers = response.headers_mut();
